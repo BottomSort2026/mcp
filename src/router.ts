@@ -1,5 +1,6 @@
 import type { Turn } from './history.ts';
 import type { Chat } from './provider.ts';
+import { parseJsonObject } from './text.ts';
 
 export type Scalar = string | number | boolean;
 
@@ -58,7 +59,7 @@ export async function route(message: string, history: Turn[], chat: Chat): Promi
     { json: true },
   );
 
-  const decision = parseObject(raw);
+  const decision = parseJsonObject(raw);
   if (!decision) return { sensible: false };
 
   const english = typeof decision.english === 'string' ? decision.english.trim() : '';
@@ -70,23 +71,6 @@ export async function route(message: string, history: Turn[], chat: Chat): Promi
   }
 
   return { sensible: true, english, intent: 'investigate' };
-}
-
-// Models sometimes wrap JSON in prose or code fences.
-function parseObject(raw: string): Record<string, unknown> | undefined {
-  const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '');
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return undefined;
-
-  try {
-    const value = JSON.parse(text.slice(start, end + 1)) as unknown;
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function flatScalars(value: unknown): Record<string, Scalar> | undefined {

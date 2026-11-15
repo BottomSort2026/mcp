@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util';
 import { openCorpus } from './db.ts';
 import { embed, type EmbedOptions } from './embeddings.ts';
-import { anthropicStructuredClient, anthropicTokenCounter } from './reports/claude.ts';
+import { anthropicReportClient, anthropicTokenCounter } from './reports/claude.ts';
 import { loadReportConfig } from './reports/config.ts';
 import {
   dryRunInvestigations,
@@ -68,6 +68,7 @@ async function main(): Promise<void> {
           throw new Error('ENGINE_URL is not set');
         },
     model: config.model,
+    maxTokens: config.maxTokens,
     log: (message: string) => console.log(message),
   };
   const options = {
@@ -97,7 +98,7 @@ async function main(): Promise<void> {
     }
 
     const { report, jsonPath, markdownPath } = await generateInvestigationsReport(
-      { ...deps, client: anthropicStructuredClient({ apiKey: config.apiKey!, model: config.model }) },
+      { ...deps, client: anthropicReportClient({ apiKey: config.apiKey!, model: config.model }) },
       options,
     );
 

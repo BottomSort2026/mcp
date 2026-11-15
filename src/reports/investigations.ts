@@ -6,11 +6,12 @@ import type { Embed, Warn } from '../rag.ts';
 import { ReportCache, type CacheKey } from './cache.ts';
 import {
   addUsage,
-  callStructured,
+  callJson,
+  DEFAULT_MAX_TOKENS,
   EFFORT,
   emptyUsage,
-  MAX_TOKENS,
-  type StructuredClient,
+  type ReportClient,
+  type ReportRequest,
   type TokenCounter,
 } from './claude.ts';
 import { buildEvidence, listInvestigations, type Evidence, type InvestigationRow } from './evidence.ts';
@@ -26,11 +27,7 @@ import {
 import { coverageMatrix, habitatTop, rankInvestigations } from './rank.ts';
 import { renderInvestigations } from './render.ts';
 import { RUBRIC_VERSION, rubricJson } from './rubric.ts';
-import {
-  InvestigationOutputSchema,
-  strictJsonSchema,
-  SynthesisOutputSchema,
-} from './schema.ts';
+import { InvestigationOutputSchema, SynthesisOutputSchema } from './schema.ts';
 import { synthesisInput, validateSynthesis } from './synthesis.ts';
 import type { Failure, InvestigationRecord, InvestigationsReport, Synthesis, Usage } from './types.ts';
 import { validateInvestigation } from './validate.ts';
@@ -42,9 +39,11 @@ export type ReportDeps = {
   corpus: Corpus;
   embed: Embed;
   warn: Warn;
-  client: StructuredClient;
+  client: ReportClient;
   /** The requested model: part of the cache key and of the provenance. */
   model: string;
+  /** max_tokens of every call; DEFAULT_MAX_TOKENS when absent. Not part of the cache key. */
+  maxTokens?: number;
   log?: (message: string) => void;
   now?: () => Date;
 };
@@ -71,7 +70,6 @@ export type ReportResult = {
 
 type RunSetup = {
   prompts: SystemPrompts;
-  schemas: { investigation: Record<string, unknown>; synthesis: Record<string, unknown> };
   key: CacheKey;
   cache: ReportCache;
   all: InvestigationRow[];
@@ -86,15 +84,13 @@ function prepareRun(deps: { corpus: Corpus; model: string }, options: ReportOpti
   } catch {
     throw new Error(`cannot read the challenge text at ${options.challengePath}`);
   }
+  // The system prompts end with the output format sections, so the schemas are hashed with them.
   const prompts = loadSystemPrompts(options.promptsDir ?? PROMPTS_DIR, challenge);
-  const schemas = {
-    investigation: strictJsonSchema(InvestigationOutputSchema),
-    synthesis: strictJsonSchema(SynthesisOutputSchema),
-  };
   const key: CacheKey = {
     model: deps.model,
-    // The schemas and call settings shape the reply as much as the prompts do.
-    prompt_version: promptVersion(prompts, RUBRIC_VERSION, { schemas, effort: EFFORT, max_tokens: MAX_TOKENS }),
+    // Effort shapes the reply as much as the prompts do. max_tokens is left out: raising it after
+    // a truncation must not invalidate the investigations already cached.
+    prompt_version: promptVersion(prompts, RUBRIC_VERSION, { effort: EFFORT }),
     rubric_version: RUBRIC_VERSION,
     corpus_built_at: deps.corpus.info.built_at,
     challenge_sha256: sha256(challenge),
@@ -106,7 +102,7 @@ function prepareRun(deps: { corpus: Corpus; model: string }, options: ReportOpti
     const unknown = [...only].filter((a) => !all.some((i) => i.accession === a));
     if (unknown.length) throw new Error(`--only names accessions not in the corpus: ${unknown.join(', ')}`);
   }
-  return { prompts, schemas, key, cache: new ReportCache(join(options.outDir, '.cache')), all, only };
+  return { prompts, key, cache: new ReportCache(join(options.outDir, '.cache')), all, only };
 }
 
 export async function generateInvestigationsReport(
@@ -114,7 +110,8 @@ export async function generateInvestigationsReport(
   options: ReportOptions,
 ): Promise<ReportResult> {
   const log = deps.log ?? (() => {});
-  const { prompts, schemas, key, cache, all, only } = prepareRun(deps, options);
+  const { prompts, key, cache, all, only } = prepareRun(deps, options);
+  const maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
 
   // Which investigations come from the cache, which are generated, which are left out.
   const records = new Map<string, InvestigationRecord>();
@@ -142,14 +139,9 @@ export async function generateInvestigationsReport(
     const spent = emptyUsage();
     try {
       const evidence = await buildEvidence(investigation, deps);
-      const { value, model } = await callStructured(
+      const { value, model } = await callJson(
         deps.client,
-        {
-          system: prompts.investigation,
-          user: investigationUser(evidence),
-          schema: schemas.investigation,
-          maxTokens: MAX_TOKENS,
-        },
+        investigationRequest(prompts, evidence, maxTokens),
         InvestigationOutputSchema,
         spent,
       );
@@ -176,14 +168,9 @@ export async function generateInvestigationsReport(
     if (!synthesis) {
       const spent = emptyUsage();
       try {
-        const { value, model } = await callStructured(
+        const { value, model } = await callJson(
           deps.client,
-          {
-            system: prompts.synthesis,
-            user: input,
-            schema: schemas.synthesis,
-            maxTokens: MAX_TOKENS,
-          },
+          { system: prompts.synthesis, messages: [{ role: 'user', content: input }], maxTokens },
           SynthesisOutputSchema,
           spent,
         );
@@ -265,7 +252,7 @@ export const DRY_RUN_DIR = '.dry-run';
  */
 export async function dryRunInvestigations(deps: DryRunDeps, options: ReportOptions): Promise<DryRunResult> {
   const log = deps.log ?? (() => {});
-  const { prompts, schemas, key, cache, all, only } = prepareRun(deps, options);
+  const { prompts, key, cache, all, only } = prepareRun(deps, options);
   const dir = join(options.outDir, DRY_RUN_DIR);
   mkdirSync(dir, { recursive: true });
 
@@ -278,12 +265,8 @@ export async function dryRunInvestigations(deps: DryRunDeps, options: ReportOpti
     const { accession } = investigation;
     try {
       const evidence = await buildEvidence(investigation, deps);
-      const request = {
-        system: prompts.investigation,
-        user: investigationUser(evidence),
-        schema: schemas.investigation,
-        maxTokens: MAX_TOKENS,
-      };
+      const request = investigationRequest(prompts, evidence, deps.maxTokens ?? DEFAULT_MAX_TOKENS);
+      const user = request.messages[0].content;
       // Read only: the same rule as a real run (--only and --force regenerate).
       const would_call = only !== undefined || options.force === true || !cache.readInvestigation(accession, key);
       let input_tokens: number | null = null;
@@ -301,11 +284,14 @@ export async function dryRunInvestigations(deps: DryRunDeps, options: ReportOpti
         path: join(dir, `${accession}.md`),
         passages: evidence.passages.length,
         system_chars: request.system.length,
-        user_chars: request.user.length,
+        user_chars: user.length,
         input_tokens,
         would_call,
       };
-      writeFileSync(entry.path, dryRunMarkdown(evidence, entry, request, deps.model, key.prompt_version));
+      writeFileSync(
+        entry.path,
+        dryRunMarkdown(evidence, entry, { system: request.system, user }, deps.model, key.prompt_version),
+      );
       entries.push(entry);
       log(`${accession}: ${evidence.passages.length} passages, wrote ${entry.path}`);
     } catch (error) {
@@ -350,7 +336,7 @@ function dryRunMarkdown(
   const size =
     entry.input_tokens === null
       ? `${entry.system_chars + entry.user_chars} characters (system ${entry.system_chars}, user ${entry.user_chars}); not token-counted`
-      : `${entry.input_tokens} input tokens (count_tokens, with the system prompt and output schema); ${entry.system_chars + entry.user_chars} characters`;
+      : `${entry.input_tokens} input tokens (count_tokens, with the system prompt and its output format section); ${entry.system_chars + entry.user_chars} characters`;
   return [
     `# Dry run: ${investigation.accession}${investigation.acronym ? ` (${investigation.acronym})` : ''}`,
     '',
@@ -424,6 +410,14 @@ export function formatUsage(usage: InvestigationsReport['run']['usage']): string
     line('synthesis', usage.synthesis),
     line('total', usage.total),
   ].join('\n');
+}
+
+function investigationRequest(prompts: SystemPrompts, evidence: Evidence, maxTokens: number): ReportRequest {
+  return {
+    system: prompts.investigation,
+    messages: [{ role: 'user', content: investigationUser(evidence) }],
+    maxTokens,
+  };
 }
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');

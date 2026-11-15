@@ -2,22 +2,18 @@ import { z } from 'zod';
 import { HABITATS, MAX_SCORE, MODEL_CRITERIA, OBJECTIVES, PILLARS } from './rubric.ts';
 
 /*
- * The schemas Claude fills through structured outputs (output_config.format).
+ * The schemas of the JSON objects Claude writes. No constrained decoding: prompts.ts appends each
+ * schema (z.toJSONSchema) to its system prompt as an `## Output format` section, and claude.ts
+ * validates every reply against it with zod, with one repair call on failure. These schemas are
+ * the source of truth for the output shape.
  *
- * Limits from platform.claude.com/docs/en/build-with-claude/structured-outputs (read 2026-11-15):
- * at most 24 optional parameters and 16 parameters with union types (anyOf or type arrays such as
- * ["string", "null"]) per request; additionalProperties must be false; no numeric or string
- * constraints; minItems only 0 or 1; enum and $ref/$defs are supported.
- *
- * So every property is required and nothing is nullable: a field the passages do not state comes
- * back as { stated: false, text: "", sources: [] } and the code turns it into null. Scores are an
- * integer enum, which the grammar enforces. The SDK's zodOutputFormat helper (1.3.0) moves `enum`
- * into the description, so strictJsonSchema below is used instead, and zod validates every reply.
+ * Every property is required and nothing is nullable: a field the passages do not state comes
+ * back as { stated: false, text: "not stated in the corpus", sources: [] } and the code turns it
+ * into null. Scores are an integer enum.
  *
  * The field names follow reports/prompts/*.system.md. The list limits the prompts state are .max()
- * here: structured outputs do not accept maxItems (strictJsonSchema strips it), so the descriptions
- * repeat them and zod rejects a longer list (the call is retried once). Word limits are not
- * enforced; validation flags a text that exceeds one.
+ * here (maxItems in the schema the model sees) and the descriptions repeat them; zod rejects a
+ * longer list. Word limits are not enforced; validation flags a text that exceeds one.
  */
 
 const Sources = z
@@ -32,7 +28,7 @@ export const MaybeClaimSchema = z
     'stated: false when the passages do not state it; then text is "not stated in the corpus" and sources is [].',
   );
 
-// z.literal with several values becomes an integer enum, not an anyOf: no union is spent on it.
+// z.literal with several values becomes an integer enum in the JSON Schema.
 const Score = z.literal(Array.from({ length: MAX_SCORE + 1 }, (_, score) => score));
 
 export const ScoredSchema = z.object({
@@ -134,46 +130,3 @@ export const SynthesisOutputSchema = z.object({
   gaps: z.array(Statement).max(LIMITS.gaps).describe(`Up to ${LIMITS.gaps} gaps.`),
 });
 export type SynthesisOutput = z.infer<typeof SynthesisOutputSchema>;
-
-// Keywords the API rejects or ignores; zod still checks them on the reply.
-const UNSUPPORTED = new Set([
-  '$schema',
-  'minimum',
-  'maximum',
-  'exclusiveMinimum',
-  'exclusiveMaximum',
-  'multipleOf',
-  'minLength',
-  'maxLength',
-  'maxItems',
-  'uniqueItems',
-]);
-
-type Json = Record<string, unknown>;
-
-/** z.toJSONSchema, then only what structured outputs accept. */
-export function strictJsonSchema(schema: z.ZodType): Json {
-  return strict(z.toJSONSchema(schema) as Json);
-}
-
-function strict(node: Json): Json {
-  const out: Json = {};
-  for (const [key, value] of Object.entries(node)) {
-    if (UNSUPPORTED.has(key)) continue;
-    if (key === 'minItems') {
-      if (value === 0 || value === 1) out[key] = value;
-    } else if (key === 'properties' || key === '$defs') {
-      out[key] = Object.fromEntries(
-        Object.entries(value as Record<string, Json>).map(([name, child]) => [name, strict(child)]),
-      );
-    } else if (key === 'items' && value && typeof value === 'object' && !Array.isArray(value)) {
-      out[key] = strict(value as Json);
-    } else if ((key === 'anyOf' || key === 'allOf') && Array.isArray(value)) {
-      out[key] = value.map((child) => strict(child as Json));
-    } else {
-      out[key] = value;
-    }
-  }
-  if (out.type === 'object') out.additionalProperties = false;
-  return out;
-}

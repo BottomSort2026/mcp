@@ -40,7 +40,7 @@ export function toAnthropicRequest(messages: Message[]): { system?: string; mess
 
 /**
  * Claude through the native Messages API, one call per invocation. `json` sends nothing extra:
- * the router prompt demands a bare JSON object and parseObject tolerates fences and prose.
+ * the router prompt demands a bare JSON object and parseJsonObject tolerates fences and prose.
  */
 export function createAnthropicChat(options: AnthropicChatOptions): Chat {
   const client =

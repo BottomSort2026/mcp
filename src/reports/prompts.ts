@@ -1,14 +1,17 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { investigationName } from '../citations.ts';
 import { passageBlock } from '../pipeline.ts';
 import type { Evidence, EvidenceCoverage } from './evidence.ts';
+import { InvestigationOutputSchema, SynthesisOutputSchema } from './schema.ts';
 
 /*
  * The system prompts live in reports/prompts/*.system.md, written and reviewed by the team. The
- * code only fills their placeholders. Their rendered text is hashed into the prompt version, so
- * editing a prompt invalidates the cache by itself.
+ * code fills their placeholders and appends an `## Output format` section generated from the
+ * call's zod schema, so the files stay free of schema text. The result is hashed into the prompt
+ * version, so editing a prompt or a schema invalidates the cache by itself.
  */
 
 /** Where the prompt files are, relative to the repository root. Not moved by --out. */
@@ -23,13 +26,37 @@ export type SystemPrompts = Record<keyof typeof PROMPT_FILES, string>;
 
 const PLACEHOLDER = /\{\{\s*([^{}]*?)\s*\}\}/g;
 
-/** Reads both prompt files and replaces {{CHALLENGE}} with the challenge text. */
-export function loadSystemPrompts(dir: string, challenge: string): SystemPrompts {
+/** The zod schema of each call's reply, the source of its `## Output format` section. */
+export const OUTPUT_SCHEMAS = {
+  investigation: InvestigationOutputSchema,
+  synthesis: SynthesisOutputSchema,
+} as const satisfies Record<keyof typeof PROMPT_FILES, z.ZodType>;
+
+/**
+ * Reads both prompt files, replaces {{CHALLENGE}} with the challenge text and appends each call's
+ * output format section.
+ */
+export function loadSystemPrompts(
+  dir: string,
+  challenge: string,
+  schemas: Record<keyof typeof PROMPT_FILES, z.ZodType> = OUTPUT_SCHEMAS,
+): SystemPrompts {
   const values = { CHALLENGE: challenge.trim() };
   return {
-    investigation: renderPromptFile(join(dir, PROMPT_FILES.investigation), values),
-    synthesis: renderPromptFile(join(dir, PROMPT_FILES.synthesis), values),
+    investigation: `${renderPromptFile(join(dir, PROMPT_FILES.investigation), values)}\n\n${outputFormatSection(schemas.investigation)}`,
+    synthesis: `${renderPromptFile(join(dir, PROMPT_FILES.synthesis), values)}\n\n${outputFormatSection(schemas.synthesis)}`,
   };
+}
+
+/** The section appended to a system prompt: the reply format and the JSON Schema of `schema`. */
+export function outputFormatSection(schema: z.ZodType): string {
+  return [
+    '## Output format',
+    '',
+    'Respond with exactly one JSON object that matches the schema below. Write no prose before or after it and no Markdown fences. Use the field names exactly as the schema gives them.',
+    '',
+    JSON.stringify(z.toJSONSchema(schema), null, 2),
+  ].join('\n');
 }
 
 export function renderPromptFile(path: string, values: Record<string, string>): string {
@@ -66,7 +93,8 @@ export function renderPrompt(template: string, values: Record<string, string>, o
 
 /**
  * The prompt version: a short hash of everything that shapes a call besides the evidence: both
- * rendered system prompts, the rubric version, and the output schemas and call settings.
+ * system prompts (rendered, with their output format sections, so the schemas are included), the
+ * rubric version and the call settings.
  */
 export function promptVersion(prompts: SystemPrompts, rubricVersion: string, callShape: unknown): string {
   return createHash('sha256')

@@ -8,14 +8,17 @@ import { fileURLToPath } from 'node:url';
 import { toCitation } from '../src/citations.ts';
 import { openCorpus, type Corpus } from '../src/db.ts';
 import { search } from '../src/rag.ts';
+import { z } from 'zod';
 import {
-  anthropicStructuredClient,
-  callStructured,
+  anthropicReportClient,
+  anthropicTokenCounter,
+  callJson,
+  EFFORT,
   emptyUsage,
-  type StructuredClient,
+  type ReportClient,
+  type ReportReply,
+  type ReportRequest,
   type TokenCounter,
-  type StructuredReply,
-  type StructuredRequest,
 } from '../src/reports/claude.ts';
 import { buildEvidence, cardDocId, listInvestigations } from '../src/reports/evidence.ts';
 import {
@@ -25,14 +28,20 @@ import {
   mentionsReducedPressure,
 } from '../src/reports/conditions.ts';
 import { dryRunInvestigations, generateInvestigationsReport } from '../src/reports/investigations.ts';
-import { loadSystemPrompts, PROMPT_FILES, renderPrompt } from '../src/reports/prompts.ts';
+import {
+  loadSystemPrompts,
+  OUTPUT_SCHEMAS,
+  outputFormatSection,
+  PROMPT_FILES,
+  promptVersion,
+  renderPrompt,
+} from '../src/reports/prompts.ts';
 import { rankInvestigations, total } from '../src/reports/rank.ts';
 import { renderInvestigations } from '../src/reports/render.ts';
-import { HABITATS, MODEL_CRITERIA, OBJECTIVES, type Habitat } from '../src/reports/rubric.ts';
+import { HABITATS, MODEL_CRITERIA, OBJECTIVES, RUBRIC_VERSION, type Habitat } from '../src/reports/rubric.ts';
 import {
   InvestigationOutputSchema,
   LIMITS,
-  strictJsonSchema,
   SynthesisOutputSchema,
   type InvestigationOutput,
 } from '../src/reports/schema.ts';
@@ -142,7 +151,7 @@ const usage = (input = 1000, output = 100) => ({
   cache_creation_input_tokens: 0,
   cache_read_input_tokens: 0,
 });
-const reply = (text: string, stopReason = 'end_turn'): StructuredReply => ({
+const reply = (text: string, stopReason = 'end_turn'): ReportReply => ({
   text,
   stopReason,
   model: MODEL,
@@ -153,14 +162,15 @@ const reply = (text: string, stopReason = 'end_turn'): StructuredReply => ({
  * Fake Claude: answers the synthesis with SYNTHESIS and each investigation with fakeOutput,
  * PSI-1 scoring 3 and PSI-2 scoring 1. `answer` can override a reply per accession and attempt.
  */
-function fakeClaude(answer?: (accession: string, attempt: number) => StructuredReply | undefined) {
-  const calls: Array<{ accession: string | null; request: StructuredRequest }> = [];
-  const client: StructuredClient = async (request) => {
-    if (request.user.startsWith('Records:')) {
+function fakeClaude(answer?: (accession: string, attempt: number) => ReportReply | undefined) {
+  const calls: Array<{ accession: string | null; request: ReportRequest }> = [];
+  const client: ReportClient = async (request) => {
+    const user = request.messages[0].content;
+    if (user.startsWith('Records:')) {
       calls.push({ accession: null, request });
       return reply(JSON.stringify(SYNTHESIS));
     }
-    const accession = /^Investigation: (?:[^\n(]*\()?(PSI-\d+)/.exec(request.user)![1];
+    const accession = /^Investigation: (?:[^\n(]*\()?(PSI-\d+)/.exec(user)![1];
     calls.push({ accession, request });
     const attempt = calls.filter((c) => c.accession === accession).length;
     return (
@@ -171,33 +181,22 @@ function fakeClaude(answer?: (accession: string, attempt: number) => StructuredR
   return { client, calls };
 }
 
-test('the output schemas stay inside the structured-outputs limits', () => {
-  for (const schema of [InvestigationOutputSchema, SynthesisOutputSchema]) {
-    const json = strictJsonSchema(schema);
-    const text = JSON.stringify(json);
-    assert.ok(!text.includes('anyOf'), 'no union types');
-    assert.ok(!/"type":\[/.test(text), 'no type arrays');
-    assert.ok(!text.includes('"minimum"') && !text.includes('"maximum"'), 'no numeric constraints');
-
-    const visit = (node: unknown): void => {
-      if (Array.isArray(node)) return node.forEach(visit);
-      if (!node || typeof node !== 'object') return;
-      const object = node as Record<string, unknown>;
-      if (object.type === 'object') {
-        assert.equal(object.additionalProperties, false);
-        assert.deepEqual(
-          [...((object.required as string[]) ?? [])].sort(),
-          Object.keys(object.properties as object).sort(),
-          'every property is required: no optional parameters',
-        );
-      }
-      Object.values(object).forEach(visit);
-    };
-    visit(json);
+test('each system prompt ends with the ## Output format section and its JSON Schema', () => {
+  const prompts = loadSystemPrompts(PROMPTS, 'Challenge.');
+  for (const name of ['investigation', 'synthesis'] as const) {
+    const section = outputFormatSection(OUTPUT_SCHEMAS[name]);
+    assert.ok(prompts[name].endsWith(`\n\n${section}`), `${name} ends with its output format section`);
+    assert.match(section, /^## Output format\n\nRespond with exactly one JSON object that matches the schema below\./);
+    assert.match(section, /no Markdown fences/);
+    const schema = JSON.parse(section.slice(section.indexOf('\n{') + 1));
+    assert.deepEqual(schema, z.toJSONSchema(OUTPUT_SCHEMAS[name]));
+    // The files themselves carry no schema text.
+    assert.ok(!readFileSync(join(PROMPTS, PROMPT_FILES[name]), 'utf8').includes('## Output format'));
   }
-  // Scores are an enum the grammar enforces (the SDK helper would move it into the description).
-  const scores = (strictJsonSchema(InvestigationOutputSchema) as any).properties.scores.properties;
-  assert.deepEqual(scores.fire_safety_directness.properties.score.enum, [0, 1, 2, 3]);
+  // Scores are an integer enum, and the list limits reach the model as maxItems.
+  const schema = z.toJSONSchema(InvestigationOutputSchema) as any;
+  assert.deepEqual(schema.properties.scores.properties.fire_safety_directness.properties.score.enum, [0, 1, 2, 3]);
+  assert.equal(schema.properties.key_findings.maxItems, LIMITS.key_findings);
   assert.ok(InvestigationOutputSchema.safeParse(fakeOutput()).success);
 });
 
@@ -404,21 +403,81 @@ test('ranking: weights and tie-breaks give the expected order, and tier_mismatch
   assert.match(ranked[4].review_flags[0].message, /fire_relevance 1 but ranked 5 of 5/);
 });
 
-test('callStructured retries a bad reply once, then fails', async () => {
-  const replies = [reply('not json'), reply(JSON.stringify(fakeOutput()))];
-  const spent = emptyUsage();
-  const result = await callStructured(async () => replies.shift()!, REQUEST, InvestigationOutputSchema, spent);
-  assert.equal(result.model, MODEL);
-  assert.equal(spent.calls, 2, 'both attempts are counted');
+const REQUEST: ReportRequest = { system: 's', messages: [{ role: 'user', content: 'u' }], maxTokens: 100 };
 
-  const refusals = [reply('', 'refusal'), reply('{"summary": {}}')];
-  await assert.rejects(
-    callStructured(async () => refusals.shift()!, REQUEST, InvestigationOutputSchema, emptyUsage()),
-    /does not match the schema.*after one retry/,
-  );
+/** A ReportClient that answers from `replies` in order and records every request. */
+function scripted(replies: ReportReply[]) {
+  const requests: ReportRequest[] = [];
+  const client: ReportClient = async (request) => {
+    requests.push(structuredClone(request));
+    return replies.shift() ?? assert.fail('unexpected call');
+  };
+  return { client, requests };
+}
+
+test('callJson: a reply in a ```json fence, or with prose around it, parses and validates', async () => {
+  for (const text of [
+    `\`\`\`json\n${JSON.stringify(fakeOutput(), null, 2)}\n\`\`\``,
+    `Here is the object:\n${JSON.stringify(fakeOutput())}\nDone.`,
+  ]) {
+    const fake = scripted([reply(text)]);
+    const result = await callJson(fake.client, REQUEST, InvestigationOutputSchema, emptyUsage());
+    assert.deepEqual(result.value, fakeOutput());
+    assert.equal(fake.requests.length, 1);
+  }
 });
 
-const REQUEST: StructuredRequest = { system: 's', user: 'u', schema: {}, maxTokens: 100 };
+test('callJson: an invalid reply gets one repair call carrying that reply and its issues', async () => {
+  const bad = JSON.stringify({ summary: {}, scores: {} });
+  const fake = scripted([reply(bad), reply(JSON.stringify(fakeOutput()))]);
+  const spent = emptyUsage();
+  const result = await callJson(fake.client, REQUEST, InvestigationOutputSchema, spent);
+  assert.equal(result.model, MODEL);
+  assert.equal(fake.requests.length, 2, 'exactly two calls');
+  assert.equal(spent.calls, 2, 'both calls are counted');
+  assert.equal(spent.input_tokens, 2000);
+
+  const [first, second] = fake.requests;
+  assert.deepEqual(first, REQUEST);
+  assert.equal(second.system, REQUEST.system);
+  assert.equal(second.maxTokens, REQUEST.maxTokens);
+  assert.equal(second.messages.length, 3);
+  assert.deepEqual(second.messages.slice(0, 2), [REQUEST.messages[0], { role: 'assistant', content: bad }]);
+  const repair = second.messages[2];
+  assert.equal(repair.role, 'user');
+  const issues = repair.content.split('\n').filter((line) => line.startsWith('- '));
+  assert.equal(issues.length, 10, 'at most 10 issues');
+  assert.match(repair.content, /^- summary\.plain: /m);
+  assert.match(repair.content, /\(and \d+ more\)/);
+  assert.match(repair.content, /complete corrected JSON object only/);
+});
+
+test('callJson: a reply that is not JSON is repaired too', async () => {
+  const fake = scripted([reply('not json'), reply(JSON.stringify(fakeOutput()))]);
+  await callJson(fake.client, REQUEST, InvestigationOutputSchema, emptyUsage());
+  assert.match(fake.requests[1].messages[2].content, /^- \(reply\): no valid JSON object found$/m);
+});
+
+test('callJson: two invalid replies fail with the first issues', async () => {
+  const fake = scripted([reply('not json'), reply('{"summary": {}}')]);
+  const spent = emptyUsage();
+  await assert.rejects(
+    callJson(fake.client, REQUEST, InvestigationOutputSchema, spent),
+    /^ReportCallError: the reply is not valid after one repair: summary\.plain: [^;]+; [^;]+; [^;]+$/,
+  );
+  assert.equal(spent.calls, 2);
+});
+
+test('callJson: stop_reason max_tokens fails without a repair call and names REPORT_MAX_TOKENS', async () => {
+  const fake = scripted([reply('{"summary": ', 'max_tokens')]);
+  const spent = emptyUsage();
+  await assert.rejects(
+    callJson(fake.client, REQUEST, InvestigationOutputSchema, spent),
+    /the output was truncated at max_tokens \(100\); raise REPORT_MAX_TOKENS/,
+  );
+  assert.equal(fake.requests.length, 1);
+  assert.equal(spent.calls, 1);
+});
 
 test('generator: failed investigations are recorded and the run continues', async () => {
   await withCorpus((corpus) =>
@@ -426,7 +485,7 @@ test('generator: failed investigations are recorded and the run continues', asyn
       writeFileSync(join(dir, 'challenge.md'), 'Challenge text.');
       const fake = fakeClaude((accession, attempt) => {
         if (accession === 'PSI-1' && attempt === 1) return reply('{"truncated": ');
-        if (accession === 'PSI-2') return reply('', 'max_tokens');
+        if (accession === 'PSI-2') return reply('{"summary": ', 'max_tokens');
         return undefined;
       });
       const { report } = await generateInvestigationsReport(
@@ -435,11 +494,37 @@ test('generator: failed investigations are recorded and the run continues', asyn
       );
       assert.deepEqual(report.investigations.map((r) => r.accession), ['PSI-1']);
       assert.deepEqual(report.failed, [
-        { step: 'investigation', accession: 'PSI-2', error: 'stop_reason max_tokens (after one retry)' },
+        {
+          step: 'investigation',
+          accession: 'PSI-2',
+          error: 'the output was truncated at max_tokens (16000); raise REPORT_MAX_TOKENS and rerun',
+        },
       ]);
-      assert.equal(report.run.usage.investigations.calls, 4);
+      // PSI-1: the reply and its repair; PSI-2: one call, no repair after a truncation.
+      assert.equal(report.run.usage.investigations.calls, 3);
+      assert.equal(fake.calls.filter((c) => c.accession === 'PSI-2').length, 1);
       assert.equal(report.run.usage.synthesis.calls, 1);
       assert.ok(!existsSync(join(dir, '.cache', 'PSI-2.json')), 'failures are not cached');
+    }),
+  );
+});
+
+test('generator: two invalid replies record the investigation in failed', async () => {
+  await withCorpus((corpus) =>
+    withTempDir(async (dir) => {
+      writeFileSync(join(dir, 'challenge.md'), 'Challenge text.');
+      const fake = fakeClaude((accession) => (accession === 'PSI-2' ? reply('{"summary": {}}') : undefined));
+      const { report } = await generateInvestigationsReport(
+        { corpus, embed: engineDown, warn: quiet, client: fake.client, model: MODEL, now: FIXED_NOW, maxTokens: 9000 },
+        { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir: PROMPTS },
+      );
+      assert.deepEqual(report.investigations.map((r) => r.accession), ['PSI-1']);
+      assert.equal(report.failed.length, 1);
+      assert.equal(report.failed[0].accession, 'PSI-2');
+      assert.match(report.failed[0].error, /^the reply is not valid after one repair: summary\.plain: /);
+      assert.equal(fake.calls.filter((c) => c.accession === 'PSI-2').length, 2);
+      assert.equal(report.run.usage.investigations.calls, 3);
+      assert.ok(fake.calls.every((c) => c.request.maxTokens === 9000), 'deps.maxTokens reaches every call');
     }),
   );
 });
@@ -520,12 +605,14 @@ test('generator: ranking, synthesis validation and the system prompt', async () 
       );
       const investigation = fake.calls.find((c) => c.accession === 'PSI-1')!.request;
       assert.equal(investigation.system, loadSystemPrompts(PROMPTS, 'Official challenge text for the test.').investigation);
-      assert.match(investigation.system, /## The challenge\n\nOfficial challenge text for the test\.$/);
+      assert.match(investigation.system, /## The challenge\n\nOfficial challenge text for the test\.\n\n## Output format\n\n/);
+      assert.ok(investigation.system.endsWith(outputFormatSection(InvestigationOutputSchema)));
+      assert.equal(investigation.maxTokens, 16000);
       assert.match(investigation.system, /### fire_safety_directness/);
       const synthesisCall = fake.calls.find((c) => c.accession === null)!.request;
       assert.match(synthesisCall.system, /`hardware_groups`/);
       assert.match(report.run.prompt_version, /^[0-9a-f]{12}$/);
-      assert.match(investigation.user, /\[3\] Spacecraft Fire Test — PSI record \| type: psi_record/);
+      assert.match(investigation.messages[0].content, /\[3\] Spacecraft Fire Test — PSI record \| type: psi_record/);
 
       assert.deepEqual(report.investigations.map((r) => [r.rank, r.accession, r.total]), [
         [1, 'PSI-1', 100],
@@ -558,7 +645,7 @@ test('the Markdown is rendered by code from a fixed JSON and matches the snapsho
   assert.equal(markdown, readFileSync(SNAPSHOT_MD, 'utf8'));
 });
 
-test('the SDK client sends structured outputs, adaptive thinking and a cached system prompt', async () => {
+test('the SDK client sends adaptive thinking, effort and a cached system prompt, and no output format', async () => {
   const seen: Array<Record<string, any>> = [];
   const events = [
     {
@@ -588,15 +675,28 @@ test('the SDK client sends structured outputs, adaptive thinking and a cached sy
   const body = events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
   const client = new Anthropic({
     apiKey: 'sk-ant-test-not-a-real-key',
-    fetch: async (_input, init) => {
+    fetch: async (input, init) => {
       seen.push(JSON.parse(String(init?.body)));
+      if (String(input).includes('count_tokens')) {
+        return new Response(JSON.stringify({ input_tokens: 77 }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     },
   });
 
-  const call = anthropicStructuredClient({ apiKey: 'unused', model: MODEL, client });
-  const schema = strictJsonSchema(SynthesisOutputSchema);
-  const result = await call({ system: 'System.', user: 'User.', schema, maxTokens: 32000 });
+  const call = anthropicReportClient({ apiKey: 'unused', model: MODEL, client });
+  const messages: ReportRequest['messages'] = [
+    { role: 'user', content: 'User.' },
+    { role: 'assistant', content: '{"bad": true}' },
+    { role: 'user', content: 'Fix it.' },
+  ];
+  const result = await call({ system: 'System.', messages, maxTokens: 16000 });
+  const counted = await anthropicTokenCounter({ apiKey: 'unused', model: MODEL, client })({
+    system: 'System.',
+    messages,
+    maxTokens: 16000,
+  });
+  assert.equal(counted, 77);
 
   assert.deepEqual(result, {
     text: '{"ok":true}',
@@ -607,12 +707,18 @@ test('the SDK client sends structured outputs, adaptive thinking and a cached sy
   const [request] = seen;
   assert.equal(request.model, MODEL);
   assert.equal(request.stream, true);
-  assert.equal(request.max_tokens, 32000);
+  assert.equal(request.max_tokens, 16000);
   assert.deepEqual(request.thinking, { type: 'adaptive' });
-  assert.deepEqual(request.output_config, { effort: 'high', format: { type: 'json_schema', schema } });
   assert.deepEqual(request.system, [{ type: 'text', text: 'System.', cache_control: { type: 'ephemeral' } }]);
-  assert.deepEqual(request.messages, [{ role: 'user', content: 'User.' }]);
+  assert.deepEqual(request.messages, messages);
   assert.equal(request.fallbacks, 'default');
+  assert.equal(seen.length, 2);
+  for (const sent of seen) {
+    // Effort is the only output setting: no constrained decoding, no strict tools.
+    assert.deepEqual(sent.output_config, { effort: EFFORT });
+    for (const key of ['output_format', 'tools', 'tool_choice', 'response_format']) assert.ok(!(key in sent), key);
+    assert.ok(!JSON.stringify(sent).includes('json_schema'));
+  }
 });
 
 test('real corpus.db: the evidence for PSI-25', async () => {
@@ -673,7 +779,10 @@ test('prompt files: {{CHALLENGE}} is replaced in both, and other placeholders fa
   const challenge = 'Challenge with {{braces}} of its own.';
   const prompts = loadSystemPrompts(PROMPTS, `\n${challenge}\n\n`);
   for (const text of [prompts.investigation, prompts.synthesis]) {
-    assert.ok(text.endsWith(`## The challenge\n\n${challenge}`), 'the trimmed challenge closes the prompt');
+    assert.ok(
+      text.includes(`## The challenge\n\n${challenge}\n\n## Output format\n\n`),
+      'the trimmed challenge closes the file, before the output format section',
+    );
     assert.ok(!text.includes('{{CHALLENGE}}'));
   }
 
@@ -738,14 +847,25 @@ test('prompt version: editing a prompt file changes it and invalidates the cache
   );
 });
 
+test('prompt version: changing a zod schema changes it', () => {
+  const version = (schemas: Parameters<typeof loadSystemPrompts>[2] = OUTPUT_SCHEMAS) =>
+    promptVersion(loadSystemPrompts(PROMPTS, 'Challenge.', schemas), RUBRIC_VERSION, { effort: EFFORT });
+  const base = version();
+  assert.equal(version(), base);
+  const extended = { ...OUTPUT_SCHEMAS, synthesis: SynthesisOutputSchema.extend({ extra: z.string() }) };
+  assert.notEqual(version(extended), base);
+  const limit = { ...OUTPUT_SCHEMAS, synthesis: SynthesisOutputSchema.extend({ gaps: z.array(z.string()).max(5) }) };
+  assert.notEqual(version(limit), base);
+});
+
 test('--dry-run: one file per investigation, no generation call, no cache write', async () => {
   await withCorpus((corpus) =>
     withTempDir(async (dir) => {
       writeFileSync(join(dir, 'challenge.md'), 'Challenge text for the dry run.');
-      const counted: StructuredRequest[] = [];
+      const counted: ReportRequest[] = [];
       const countTokens: TokenCounter = async (request) => {
         counted.push(request);
-        return 1000 + request.user.length;
+        return 1000 + request.messages[0].content.length;
       };
       const options = { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir: PROMPTS };
       // No client at all: the dry run has nothing to call Claude with.
@@ -767,7 +887,10 @@ test('--dry-run: one file per investigation, no generation call, no cache write'
       assert.equal(psi1.would_call, true);
       const file = readFileSync(join(dryDir, 'PSI-1.md'), 'utf8');
       assert.ok(file.includes(loadSystemPrompts(PROMPTS, 'Challenge text for the dry run.').investigation));
-      assert.ok(file.includes(counted.find((r) => r.user.includes('PSI-1'))!.user));
+      const user = counted.find((r) => r.messages[0].content.includes('PSI-1'))!.messages[0].content;
+      assert.ok(file.includes(user));
+      assert.match(file, /## System prompt\n\n`{3,}markdown\n[\s\S]*\n## Output format\n\nRespond with exactly one JSON object/);
+      assert.match(readFileSync(join(dryDir, '_synthesis.md'), 'utf8'), /## Output format\n/);
       assert.match(file, /## Evidence coverage\n\n- Own documents: metadata: 1 document\(s\), 2 chunk\(s\)/);
       assert.match(file, /- Passages given to the model: 5 \(card 2, record 1, linked 2, book 0, own 0\)/);
       assert.match(file, new RegExp(`- Prompt version: ${result.prompt_version}`));
