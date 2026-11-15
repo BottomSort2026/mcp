@@ -1,4 +1,4 @@
-import { nullable } from "zod";
+import { joinUrl } from './http.ts';
 
 const env = process.env;
 
@@ -12,20 +12,33 @@ const int = (name: string, fallback: number): number => {
   return parsed;
 };
 
+const bool = (name: string, fallback: boolean): boolean => {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  throw new Error(`${name} must be true or false, got ${raw}`);
+};
+
 const required = (name: string, hint: string): string => {
   const value = env[name];
   if (!value) throw new Error(`${name} is required, ${hint}`);
   return value;
 };
 
+// Base URL of the engine service; /embed and /predict hang off it.
+const engineUrl = required('ENGINE_URL', 'e.g. ENGINE_URL=http://localhost:8000');
+
 export const config = {
-  dbPath: env.DB_PATH ?? 'data/app.sqlite',
-  port: int('PORT', 3000),
-  dim: int('EMBED_DIM', 1536),
-  embedUrl: required('EMBED_URL', 'e.g. EMBED_URL=http://localhost:11434/v1/embeddings'),
-  embedModel: env.EMBED_MODEL,
+  corpusPath: env.CORPUS_PATH || 'storage/corpus.db',
+  // The gateway expects MCP_URL=http://mcp:8001.
+  port: int('PORT', 8001),
+  engineUrl,
   llmUrl: required('LLM_URL', 'e.g. LLM_URL=http://localhost:11434/v1/chat/completions'),
   llmModel: required('LLM_MODEL', 'e.g. LLM_MODEL=llama3.1'),
   llmApiKey: env.LLM_API_KEY,
-  predictUrl: env.PREDICT_URL,
+  llmTimeoutMs: int('LLM_TIMEOUT_MS', 60_000),
+  // Off by default: the engine's /predict is still a placeholder with a different
+  // body, so the simulate intent falls back to retrieval.
+  predictUrl: bool('PREDICT_ENABLED', false) ? joinUrl(engineUrl, 'predict') : undefined,
 };

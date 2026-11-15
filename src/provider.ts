@@ -3,7 +3,7 @@ import { postJson } from './http.ts';
 export type Message = { role: 'system' | 'user' | 'assistant'; content: string };
 export type Chat = (messages: Message[], options?: { json?: boolean }) => Promise<string>;
 
-export type ChatOptions = { url: string; model: string; apiKey?: string };
+export type ChatOptions = { url: string; model: string; apiKey?: string; timeoutMs?: number };
 
 /** OpenAI-compatible chat completions, one call per invocation. */
 export function createChat(options: ChatOptions): Chat {
@@ -17,6 +17,7 @@ export function createChat(options: ChatOptions): Chat {
       },
       'llm provider',
       options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {},
+      options.timeoutMs,
     );
 
     const content = (body as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]

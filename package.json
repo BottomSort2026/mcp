@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@12.14.0",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.13"
   },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
@@ -16,7 +16,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "fastify": "^5.12.8",
-    "sqlite-vec": "^0.1.9",
+    "sqlite-vec": "0.1.9",
     "zod": "^4.6.7"
   },
   "devDependencies": {

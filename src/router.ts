@@ -1,3 +1,4 @@
+import type { Turn } from './history.ts';
 import type { Chat } from './provider.ts';
 
 export type Scalar = string | number | boolean;
@@ -7,26 +8,52 @@ export type Decision =
   | { sensible: true; english: string; intent: 'investigate' }
   | { sensible: true; english: string; intent: 'simulate'; params: Record<string, Scalar> };
 
-const SYSTEM = `You route user messages for a service that searches a set of PDF documents
-and can run simulations.
+export const ROUTER_SYSTEM = `You route messages for Flame in Freefall, an assistant on NASA microgravity
+combustion research and spacecraft fire safety, used by researchers and by students. It answers
+from a corpus in English: NASA Physical Sciences Informatics (PSI) combustion investigations such
+as SAFFIRE, FLEX, BASS and their test data, plus NASA fact sheets and a book on combustion in
+reduced gravity.
 
 Return ONLY a JSON object:
 {"sensible": true|false, "english": "...", "intent": "investigate"|"simulate", "params": {...}}
 
 Rules:
-- sensible=false when the message is gibberish, ambiguous beyond use, or not a request about the
-  documents or a simulation. Do not translate those.
-- english is the message translated to English. If it is already English, repeat it unchanged.
+- sensible=true for any question about fire, flames, combustion, extinction, fire safety in space
+  or on Earth, microgravity science, or these investigations and their data. Basic conceptual
+  questions from students ("what is a flame?", "why are flames round in space?") are sensible.
+- sensible=false only for gibberish, or a message that is unrelated to that domain. Then leave
+  english empty.
+- english is ONE standalone English search query for the corpus. Translate the latest message if
+  needed, and resolve references to earlier turns with the conversation: after a question about
+  FLEX droplet extinction, "and with helium?" becomes "effect of helium dilution on droplet flame
+  extinction in the FLEX experiments". Keep technical terms, acronyms, units and investigation
+  names exactly as written (SAFFIRE-III, PMMA, LOI, CO2, mm2/s).
 - intent="simulate" only when the user asks to run or predict a scenario and provides concrete
   values. Put those values in params as a flat object of numbers, strings or booleans. Never invent
   values; if any are missing, use intent="investigate".
 - Otherwise intent="investigate".`;
 
-export async function route(prompt: string, chat: Chat): Promise<Decision> {
+/**
+ * One structured call that translates, resolves follow-ups and classifies. The
+ * history goes inside the user message as a transcript: as real chat turns, the
+ * previous prose answers would pull the model away from answering in JSON.
+ */
+export async function route(message: string, history: Turn[], chat: Chat): Promise<Decision> {
+  const content =
+    history.length === 0
+      ? message
+      : [
+          'Conversation so far:',
+          ...history.map((turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.content}`),
+          '',
+          'Latest message:',
+          message,
+        ].join('\n');
+
   const raw = await chat(
     [
-      { role: 'system', content: SYSTEM },
-      { role: 'user', content: prompt },
+      { role: 'system', content: ROUTER_SYSTEM },
+      { role: 'user', content },
     ],
     { json: true },
   );

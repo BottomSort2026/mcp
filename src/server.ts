@@ -1,90 +1,56 @@
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import Fastify from 'fastify';
+import { buildApp } from './app.ts';
 import { config } from './config.ts';
-import { countChunks, openDb } from './db.ts';
+import { openCorpus } from './db.ts';
 import { embed } from './embeddings.ts';
-import { buildMcpServer, type McpDeps } from './mcp.ts';
-import { ask } from './pipeline.ts';
 import { createPredict } from './predict.ts';
 import { createChat } from './provider.ts';
 import type { Embed } from './rag.ts';
 
+// The corpus opens before the app exists, so its warnings wait for the logger.
+const bootWarnings: string[] = [];
+const corpus = openCorpus(config.corpusPath, { warn: (message) => bootWarnings.push(message) });
+const { embedding } = corpus.info;
+
+// The engine must run the model that built the corpus; embed() checks model_id and dimension.
 const embedQuery: Embed = (text) =>
   embed(text, {
-    url: config.embedUrl,
-    model: config.embedModel || "",
-    dim: config.dim,
+    engineUrl: config.engineUrl,
+    modelId: embedding.model_id,
+    dimension: embedding.dimension,
   });
 
-const deps: McpDeps = {
-  db: openDb(config.dbPath, config.dim),
+const app = buildApp({
+  corpus,
   embed: embedQuery,
-  chat: createChat({ url: config.llmUrl, model: config.llmModel, apiKey: config.llmApiKey }),
+  chat: createChat({
+    url: config.llmUrl,
+    model: config.llmModel,
+    apiKey: config.llmApiKey,
+    timeoutMs: config.llmTimeoutMs,
+  }),
   predict: config.predictUrl ? createPredict(config.predictUrl) : undefined,
-};
-
-const app = Fastify({ logger: true });
-
-app.get('/health', async () => ({ ok: true, chunks: countChunks(deps.db) }));
-
-app.post<{ Body: { prompt: string } }>(
-  '/ask',
-  {
-    schema: {
-      body: {
-        type: 'object',
-        required: ['prompt'],
-        additionalProperties: false,
-        properties: {
-          prompt: { type: 'string', minLength: 1, maxLength: 4000 },
-        },
-      },
-    },
-  },
-  async (request, reply) => {
-    try {
-      return await ask(request.body.prompt, deps);
-    } catch (error) {
-      request.log.error(error);
-      return reply.code(502).send({ error: (error as Error).message });
-    }
-  },
-);
-
-// Stateless MCP: a fresh server and transport per request, plain JSON responses.
-app.post('/mcp', async (request, reply) => {
-  reply.hijack();
-
-  const server = buildMcpServer(deps);
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
-
-  reply.raw.on('close', () => {
-    void transport.close();
-    void server.close();
-  });
-
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(request.raw, reply.raw, request.body);
-  } catch (error) {
-    request.log.error(error);
-    if (!reply.raw.headersSent) {
-      reply.raw.writeHead(500, { 'content-type': 'application/json' });
-    }
-    reply.raw.end(JSON.stringify({ error: 'mcp request failed' }));
-  }
 });
+
+for (const message of bootWarnings) app.log.warn(message);
+app.log.info(
+  {
+    corpus: corpus.info.corpus_name,
+    builtAt: corpus.info.built_at,
+    chunks: corpus.info.counts.chunks,
+    model: embedding.model_id,
+    dimension: embedding.dimension,
+  },
+  'corpus opened',
+);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     void app.close().then(() => {
-      deps.db.close();
+      corpus.db.close();
       process.exit(0);
     });
   });
 }
 
-await app.listen({ port: config.port });
+// All interfaces: the gateway reaches this service from another container.
+await app.listen({ host: '0.0.0.0', port: config.port });

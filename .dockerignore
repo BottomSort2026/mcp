@@ -1,0 +1,8 @@
+# The image needs only the package files, tsconfig.json, src/ and storage/corpus.db.
+.git
+.env
+node_modules
+dist
+test
+plan.md
+*.log

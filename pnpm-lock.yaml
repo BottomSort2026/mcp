@@ -173,7 +173,7 @@ importers:
         specifier: ^5.12.8
         version: 5.12.8
       sqlite-vec:
-        specifier: ^0.1.9
+        specifier: 0.1.9
         version: 0.1.9
       zod:
         specifier: ^4.6.7

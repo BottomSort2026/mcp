@@ -9,7 +9,7 @@ export type Predict = (params: Record<string, Scalar>) => Promise<unknown>;
  */
 export function createPredict(url: string | undefined): Predict {
   return async (params) => {
-    if (!url) throw new Error('PREDICT_URL is not configured');
+    if (!url) throw new Error('prediction is disabled, set PREDICT_ENABLED=true');
     return postJson(url, params, 'predict engine');
   };
 }
