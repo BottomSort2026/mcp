@@ -1,10 +1,26 @@
 import { buildApp } from './app.ts';
-import { config } from './config.ts';
+import { loadConfig, type LlmConfig } from './config.ts';
 import { openCorpus } from './db.ts';
 import { embed } from './embeddings.ts';
 import { createPredict } from './predict.ts';
-import { createChat } from './provider.ts';
+import { createChat, type Chat } from './provider.ts';
+import { createAnthropicChat } from './provider-anthropic.ts';
 import type { Embed } from './rag.ts';
+
+// Before the corpus opens: a missing ENGINE_URL or ANTHROPIC_API_KEY stops the boot here.
+const config = loadConfig();
+
+function chatFor(llm: LlmConfig): Chat {
+  if (llm.provider === 'anthropic') {
+    return createAnthropicChat({
+      apiKey: llm.apiKey,
+      model: llm.model,
+      maxTokens: llm.maxTokens,
+      timeoutMs: llm.timeoutMs,
+    });
+  }
+  return createChat({ url: llm.url, model: llm.model, apiKey: llm.apiKey, timeoutMs: llm.timeoutMs });
+}
 
 // The corpus opens before the app exists, so its warnings wait for the logger.
 const bootWarnings: string[] = [];
@@ -22,12 +38,7 @@ const embedQuery: Embed = (text) =>
 const app = buildApp({
   corpus,
   embed: embedQuery,
-  chat: createChat({
-    url: config.llmUrl,
-    model: config.llmModel,
-    apiKey: config.llmApiKey,
-    timeoutMs: config.llmTimeoutMs,
-  }),
+  chat: chatFor(config.llm),
   predict: config.predictUrl ? createPredict(config.predictUrl) : undefined,
 });
 
@@ -42,6 +53,8 @@ app.log.info(
   },
   'corpus opened',
 );
+// Provider and model only; the API key is never logged.
+app.log.info({ provider: config.llm.provider, model: config.llm.model }, 'llm configured');
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {

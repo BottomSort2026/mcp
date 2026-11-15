@@ -181,6 +181,8 @@ export type IndexOptions = {
   drop?: string[];
   /** Leave chunks_vec empty, so vector search finds nothing. */
   withoutVectors?: boolean;
+  /** investigations.metadata_json per accession; '{}' otherwise. */
+  metadata?: Record<string, unknown>;
 };
 
 // Stands in for the train repo: writes the corpus once, then hands over a
@@ -192,7 +194,8 @@ export function createIndex(path: string, options: IndexOptions = {}): void {
 
   const investigation = db.prepare('INSERT INTO investigations VALUES (?, ?, ?, ?, ?, ?)');
   for (const i of INVESTIGATIONS) {
-    investigation.run(i.accession, i.acronym, i.title, i.fire_relevance, i.investigation_url, '{}');
+    const metadata = options.metadata?.[i.accession] ?? {};
+    investigation.run(i.accession, i.acronym, i.title, i.fire_relevance, i.investigation_url, JSON.stringify(metadata));
   }
 
   const document = db.prepare('INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');

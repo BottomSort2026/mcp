@@ -149,12 +149,34 @@ failure.
 
 ## LLM contract
 
-OpenAI-compatible chat completions; the router call asks for `response_format: json_object`:
+`LLM_PROVIDER` picks one of two providers behind the same internal `Chat` function, so the
+pipeline and router do not know which one runs.
+
+**`openai`** (default): OpenAI-compatible chat completions; the router call asks for
+`response_format: json_object`:
 
 ```json
 { "model": "llama3.1", "messages": [{ "role": "system", "content": "…" }, { "role": "user", "content": "…" }],
   "response_format": { "type": "json_object" } }
 ```
+
+**`anthropic`**: Claude through the native Messages API (`@anthropic-ai/sdk`), not Claude's
+OpenAI compatibility layer, which rejects `json_object`. Per call:
+
+- Every `system` message, joined in order, becomes the top-level `system`. The other turns go
+  into `messages`; consecutive turns with the same role are merged, and a leading assistant turn
+  is dropped so the list starts with `user`.
+- The router call sends nothing extra: no structured outputs or forced tool use (its `params` is
+  free-form). The prompt already asks for a bare JSON object and the parser tolerates fences and
+  prose.
+- `max_tokens` is `LLM_MAX_TOKENS` (it also covers the model's thinking). The answer is the
+  concatenated text blocks; thinking blocks are ignored. Empty text or a refusal is an error.
+- Requests opt into server-side refusal fallback (`fallbacks: "default"`, beta
+  `server-side-fallback-2026-07-01`): if the model declines for policy reasons, the API retries
+  on its default fallback model; on a model without one, the request runs alone.
+- The SDK retries 408/409/429/5xx and connection errors up to 2 times, with backoff. A final
+  failure is a 502 `llm_unavailable` whose `detail` carries the status, the API's message and the
+  request id.
 
 Unparseable router output or `sensible: false` is a rejection. A simulate request without
 concrete values, or with prediction disabled, falls back to retrieval.
@@ -166,10 +188,13 @@ concrete values, or with prediction disabled, falls back to retrieval.
 | `PORT` | `8001` | Listen port (on `0.0.0.0`) |
 | `CORPUS_PATH` | `storage/corpus.db` (image: `/app/storage/corpus.db`) | The index, opened read-only |
 | `ENGINE_URL` | required | Engine base URL, e.g. `http://engine:8000`; a trailing slash is fine |
-| `LLM_URL` | required | Chat completions URL, e.g. `http://ollama:11434/v1/chat/completions` |
-| `LLM_MODEL` | required | Model name sent to the LLM |
-| `LLM_API_KEY` | none | Sent as `Authorization: Bearer …` when set |
-| `LLM_TIMEOUT_MS` | `60000` | Timeout per LLM call. Engine calls use 20 s |
+| `LLM_PROVIDER` | `openai` | `openai` (chat completions) or `anthropic` (Claude, Messages API) |
+| `LLM_URL` | required with `openai` | Chat completions URL, e.g. `http://ollama:11434/v1/chat/completions`. Not used with `anthropic` |
+| `LLM_MODEL` | required with `openai`; `claude-sonnet-5-5` with `anthropic` | Model name sent to the LLM |
+| `LLM_API_KEY` | none | `openai` only: sent as `Authorization: Bearer …` when set |
+| `ANTHROPIC_API_KEY` | required with `anthropic` | Claude API key. Boot fails without it; it is never logged. Pass it at runtime, never in the image |
+| `LLM_MAX_TOKENS` | `4096` | `anthropic` only: output cap per call, thinking included |
+| `LLM_TIMEOUT_MS` | `60000` | Timeout per LLM call attempt (both providers). Engine calls use 20 s |
 | `PREDICT_ENABLED` | `false` | Calls `${ENGINE_URL}/predict` for the simulate intent. Keep off: the engine's `/predict` is a placeholder |
 
 ## Run locally
@@ -180,15 +205,16 @@ Node ≥ 22.13 (`node:sqlite` without a flag; it still prints one `ExperimentalW
 
 ```bash
 pnpm install
-cp .env.example .env     # set ENGINE_URL, LLM_URL and LLM_MODEL
+cp .env.example .env     # set ENGINE_URL, and LLM_URL + LLM_MODEL or LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY
 pnpm dev                 # or: pnpm build && pnpm start
 curl -s localhost:8001/health
 curl -s -X POST localhost:8001/chat -H 'content-type: application/json' \
   -d '{"message":"¿Cómo afecta el CO2 a la extinción de una gota de heptano?","history":[]}'
 ```
 
-`pnpm test` runs everything offline: fixtures with the real schema, mock engine and LLM servers,
-and two tests against the real `storage/corpus.db`.
+`pnpm test` runs everything offline: fixtures with the real schema, mock engine and LLM servers
+(the Claude provider runs the real SDK over a fake `fetch`), and two tests against the real
+`storage/corpus.db`.
 
 ## Docker
 
@@ -196,9 +222,14 @@ and two tests against the real `storage/corpus.db`.
 docker build -t flame-mcp .
 docker run --rm -p 8001:8001 \
   -e ENGINE_URL=http://engine:8000 \
-  -e LLM_URL=http://ollama:11434/v1/chat/completions -e LLM_MODEL=llama3.1 \
+  -e LLM_PROVIDER=anthropic -e ANTHROPIC_API_KEY \
   flame-mcp
 ```
+
+`-e ANTHROPIC_API_KEY` with no value copies the key from your shell, so it never appears in the
+command line or the image. For a local model instead, pass
+`-e LLM_URL=http://ollama:11434/v1/chat/completions -e LLM_MODEL=llama3.1` and leave
+`LLM_PROVIDER` unset.
 
 The image (Debian `node:22.21.0-bookworm-slim`; not Alpine, since sqlite-vec ships glibc binaries)
 installs with the frozen lockfile, builds, and runs `node dist/server.js` as the `node` user. It
@@ -210,11 +241,46 @@ mcp:
   build: ./mcp
   environment:
     ENGINE_URL: http://engine:8000
-    LLM_URL: http://ollama:11434/v1/chat/completions
-    LLM_MODEL: llama3.1
+    LLM_PROVIDER: anthropic
+    # Read from the host shell or the project's .env at `docker compose up`; never committed.
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}
+    # LLM_MODEL: claude-sonnet-5-5   # the default
   volumes:
     - ./data/corpus.db:/app/storage/corpus.db:ro
 ```
+
+## Offline reports
+
+`pnpm report investigations` writes `reports/investigations.json` (imported by the frontend at
+build time) and `reports/investigations.md` (for team review). It runs on a team machine, never
+in `/chat` or the image, and calls Claude directly rather than through `/chat`: for each
+investigation it builds the evidence from the corpus (every card chunk, a "PSI record" passage
+from `metadata_json`, the linked fact sheets, up to 3 mini-book passages and up to 12 passages
+from the investigation's own other documents found by a search scoped to its accession), and
+Claude scores it against the rubric in `src/reports/rubric.ts` through structured outputs. The
+code validates the citations, computes the totals and the ranking, and renders the Markdown from
+the JSON. A last call compares the investigations by hardware and lists the gaps.
+
+```bash
+ANTHROPIC_API_KEY=… pnpm report investigations --only PSI-25,PSI-69,PSI-117
+ANTHROPIC_API_KEY=… pnpm report investigations            # reuses the three above
+pnpm report investigations --force                          # ignores reports/.cache
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | required | Claude API key |
+| `REPORT_MODEL` | `claude-opus-5-5` | Model of every report call |
+| `CORPUS_PATH` | `storage/corpus.db` | The corpus |
+| `ENGINE_URL` | none | Query embeddings; without it (or with the engine down) searches use BM25 |
+
+Each investigation's validated result is cached in `reports/.cache/<accession>.json`, keyed by
+model, prompt version, rubric version, `corpus_info.built_at` and the hash of
+`reports/inputs/challenge.md`. `--only` regenerates those accessions and takes the rest from the
+cache (investigations with no valid entry are skipped); `--force` ignores the cache. Change the
+weights in `src/reports/rubric.ts` and bump `RUBRIC_VERSION`; change a prompt, schema or call
+setting and bump `PROMPT_VERSION` in `src/reports/prompts.ts`. The run ends with the token usage
+of its calls, per step.
 
 ## Layout
 
@@ -225,16 +291,21 @@ src/config.ts      environment variables
 src/db.ts          read-only open, sqlite-vec load, schema/corpus_info/dimension checks
 src/pipeline.ts    ask(): guard, route, search, answer, citations; prompts and context budget
 src/router.ts      the routing call: sense check, standalone English query, intent
-src/rag.ts         hybrid search: BM25 + vec0 KNN, RRF, metadata, BM25-only fallback
+src/rag.ts         hybrid search: BM25 + vec0 KNN, RRF, metadata, BM25-only fallback, opt-in scope
 src/citations.ts   citation objects, labels, [n] markers
 src/history.ts     history clean-up for /chat
 src/embeddings.ts  engine /embed call, model and dimension check
-src/provider.ts    chat completions helper
+src/provider.ts    Chat type and the OpenAI-compatible chat completions provider
+src/provider-anthropic.ts  Claude provider: Messages API through @anthropic-ai/sdk
 src/predict.ts     engine /predict call (off by default)
 src/mcp.ts         MCP server, ask_question tool
 src/errors.ts      upstream error codes
 src/http.ts        POST JSON with a timeout
 src/text.ts        code-point truncation
+src/report.ts      CLI entry of pnpm report
+src/reports/       offline report generator: evidence, rubric, schemas, prompts, validation,
+                   ranking, synthesis, cache, Markdown rendering
+reports/inputs/    the official challenge text, an input of the reports
 test/              unit, search, citation, HTTP flow and real-corpus tests
 ```
 
@@ -252,4 +323,5 @@ test/              unit, search, citation, HTTP flow and real-corpus tests
 ## Not included
 
 Streaming, authentication (put the service behind the gateway), query caching, reranking,
-filters by accession or document type, and ingest (the `train` repo owns the corpus).
+filters by accession or document type in `/chat` (only the report generator scopes its searches),
+and ingest (the `train` repo owns the corpus).

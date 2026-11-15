@@ -42,23 +42,44 @@ export type Warn = (message: string) => void;
 export type VectorMatch = { id: number; distance: number };
 
 /**
+ * Optional restriction of a search. /chat never passes one; the offline report
+ * generator uses it to search inside one investigation or one kind of document.
+ */
+export type SearchScope = {
+  /** Only chunks of documents with this accession (the investigation's own documents). */
+  accession?: string;
+  /** Only chunks of documents with this doc_type. */
+  docType?: string;
+  /** Results to return instead of corpus_info.search.k. */
+  k?: number;
+};
+
+/**
  * Hybrid retrieval, translated from train/src/flame/corpus/search.py: BM25 over
  * chunks_fts and KNN over chunks_vec, fused with reciprocal rank fusion. Every
  * parameter comes from corpus_info.search. When the query cannot be embedded
  * (engine down, timeout, HTTP error, wrong model or dimension) it warns once and
  * answers with BM25 alone.
+ *
+ * With a scope that filters (accession or docType), both methods run over the
+ * scope's chunks only: BM25 restricted to their rowids, and exact L2 distances
+ * instead of the vec0 KNN, which cannot filter by a joined column.
  */
 export async function search(
   corpus: Corpus,
   query: string,
   embed: Embed,
   warn: Warn,
+  scope: SearchScope = {},
 ): Promise<SearchResult> {
   const { db, info } = corpus;
-  const { k, candidates_per_method, rrf_k } = info.search;
+  const { candidates_per_method, rrf_k } = info.search;
+  const k = scope.k ?? info.search.k;
   const n = Math.max(candidates_per_method, k);
+  const allowed =
+    scope.accession !== undefined || scope.docType !== undefined ? scopeIds(db, scope) : undefined;
 
-  const bm25 = bm25Search(db, query, n);
+  const bm25 = allowed ? bm25SearchIn(db, query, n, allowed) : bm25Search(db, query, n);
 
   let queryVector: number[] | undefined;
   try {
@@ -66,7 +87,11 @@ export async function search(
   } catch (error) {
     warn(`query embedding failed, searching with BM25 only: ${describeError(error)}`);
   }
-  const vector = queryVector ? vectorSearch(db, queryVector, n) : [];
+  const vector = !queryVector
+    ? []
+    : allowed
+      ? vectorSearchIn(db, queryVector, n, allowed)
+      : vectorSearch(db, queryVector, n);
 
   const fused = rrf([bm25, vector.map((match) => match.id)], rrf_k).slice(0, k);
   const rows = hydrate(db, fused.map(([id]) => id));
@@ -129,6 +154,69 @@ export function vectorSearch(db: DatabaseSync, vector: number[], n: number): Vec
     .map((row) => ({ id: Number(row.rowid), distance: Number(row.distance) }));
 }
 
+/** chunks.id of every chunk inside the scope, in document and chunk order. */
+export function scopeIds(db: DatabaseSync, scope: SearchScope): number[] {
+  const where: string[] = [];
+  const params: string[] = [];
+  if (scope.accession !== undefined) {
+    where.push('d.accession = ?');
+    params.push(scope.accession);
+  }
+  if (scope.docType !== undefined) {
+    where.push('d.doc_type = ?');
+    params.push(scope.docType);
+  }
+  return db
+    .prepare(
+      `SELECT c.id FROM chunks c JOIN documents d USING (doc_id)
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY c.doc_id, c.chunk_index`,
+    )
+    .all(...params)
+    .map((row) => Number(row.id));
+}
+
+/**
+ * bm25Search over the given chunk ids only. The ids bind as BigInt: node:sqlite binds a JS
+ * number as REAL, and FTS5 ignores a REAL rowid constraint (`MATCH ? AND rowid = 3.0` returns
+ * every match), which breaks a single-id scope.
+ */
+export function bm25SearchIn(db: DatabaseSync, query: string, n: number, ids: number[]): number[] {
+  const match = ftsQuery(query);
+  if (match === null || ids.length === 0) return [];
+  return db
+    .prepare(
+      `SELECT rowid, bm25(chunks_fts) AS score FROM chunks_fts
+        WHERE chunks_fts MATCH ? AND rowid IN (${placeholders(ids)})
+        ORDER BY score LIMIT ?`,
+    )
+    .all(match, ...ids.map(BigInt), BigInt(n))
+    .map((row) => Number(row.rowid));
+}
+
+/**
+ * Exact L2 distances over the given chunk ids, closest first. Used instead of the
+ * vec0 KNN when the search is scoped; a scope holds at most a few hundred chunks.
+ */
+export function vectorSearchIn(
+  db: DatabaseSync,
+  vector: number[],
+  n: number,
+  ids: number[],
+): VectorMatch[] {
+  if (ids.length === 0) return [];
+  return db
+    .prepare(
+      `SELECT rowid, vec_distance_l2(embedding, ?) AS distance FROM chunks_vec
+        WHERE rowid IN (${placeholders(ids)})
+        ORDER BY distance, rowid LIMIT ?`,
+    )
+    .all(JSON.stringify(vector), ...ids.map(BigInt), BigInt(n))
+    .map((row) => ({ id: Number(row.rowid), distance: Number(row.distance) }));
+}
+
+const placeholders = (values: unknown[]): string => values.map(() => '?').join(', ');
+
 /**
  * Reciprocal rank fusion, rank starting at 1. Sorted by score descending; as in
  * search.py (a stable sort of a dict), ties keep first-seen order, so BM25's
@@ -151,6 +239,18 @@ export function rrf(rankings: number[][], rrfK: number): Array<[id: number, scor
 export function similarity(distance: number): number {
   // `|| 0` turns the -0 that rounding can produce into 0.
   return Math.round((1 - (distance * distance) / 2) * 1000) / 1000 || 0;
+}
+
+/**
+ * Chunks picked by id rather than by a search, in the given order, with the same
+ * metadata as search hits and no score (0, no similarity, no methods).
+ */
+export function chunkHits(db: DatabaseSync, ids: number[]): SearchHit[] {
+  const rows = hydrate(db, ids);
+  return ids.flatMap((id): SearchHit[] => {
+    const row = rows.get(id);
+    return row ? [{ ...toMetadata(row), score: 0, similarity: null, methods: [] }] : [];
+  });
 }
 
 // Text and metadata for the final ids in one query; callers restore the order.

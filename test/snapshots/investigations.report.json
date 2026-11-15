@@ -1,0 +1,777 @@
+{
+  "run": {
+    "generated_at": "2026-11-15T12:00:00.000Z",
+    "model": "claude-opus-5-5",
+    "prompt_version": "2026-11-15.1",
+    "rubric_version": "2026-11-15.1",
+    "corpus_built_at": "2026-11-15T00:00:00+00:00",
+    "challenge_sha256": "d169eb9eb6368b8b643e0fd25ec69359bebde7e432f14534b9b132b269b2e161",
+    "usage": {
+      "investigations": {
+        "calls": 2,
+        "input_tokens": 2000,
+        "output_tokens": 200,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      },
+      "synthesis": {
+        "calls": 1,
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      },
+      "total": {
+        "calls": 3,
+        "input_tokens": 3000,
+        "output_tokens": 300,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    },
+    "cached": [],
+    "skipped": []
+  },
+  "rubric": {
+    "version": "2026-11-15.1",
+    "max_score": 3,
+    "criteria": [
+      {
+        "key": "fire_safety_directness",
+        "weight": 3,
+        "three": "The investigation is about spacecraft fire safety itself",
+        "scored_by": "model"
+      },
+      {
+        "key": "habitat_relevance",
+        "weight": 2,
+        "three": "Mean of the four habitat scores",
+        "scored_by": "habitats"
+      },
+      {
+        "key": "predictive_modeling_data",
+        "weight": 2,
+        "three": "Its data can feed flammability or fire-scenario models now",
+        "scored_by": "model"
+      },
+      {
+        "key": "controls_and_equipment",
+        "weight": 2,
+        "three": "It informs detection, suppression or material-selection equipment",
+        "scored_by": "model"
+      },
+      {
+        "key": "earth_applications",
+        "weight": 1,
+        "three": "The corpus states a concrete use on Earth",
+        "scored_by": "model"
+      }
+    ],
+    "habitats": [
+      "spacecraft",
+      "station",
+      "moon_base",
+      "rover"
+    ],
+    "pillars": [
+      "prevention",
+      "detection",
+      "suppression"
+    ],
+    "total": "Weighted sum of the criterion scores, normalized to 0-100",
+    "coverage_min_habitat_score": 2
+  },
+  "investigations": [
+    {
+      "rank": 1,
+      "accession": "PSI-1",
+      "acronym": "SAFFIRE-T",
+      "title": "Spacecraft Fire Test",
+      "investigation_url": "https://psi.example/investigations/PSI-1",
+      "fire_relevance": 3,
+      "total": 100,
+      "evidence_coverage": {
+        "own": [
+          {
+            "doc_type": "metadata",
+            "documents": 1,
+            "chunks": 2,
+            "paginated_documents": 0
+          }
+        ],
+        "linked": [
+          {
+            "doc_type": "factsheet",
+            "documents": 1,
+            "chunks": 2,
+            "paginated_documents": 1
+          }
+        ],
+        "has_pages": false,
+        "card_only": false,
+        "passages": {
+          "card": 2,
+          "record": 1,
+          "linked": 2,
+          "book": 0,
+          "own": 0
+        },
+        "retrieval": "bm25"
+      },
+      "summary": {
+        "plain": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "technical": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "scores": {
+        "fire_safety_directness": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "habitat_relevance": {
+          "score": 3,
+          "computed": true,
+          "reason": "Mean of the four habitat scores (3, 3, 3, 3)"
+        },
+        "predictive_modeling_data": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "controls_and_equipment": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "earth_applications": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "habitats": {
+        "spacecraft": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "station": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "moon_base": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "rover": {
+          "score": 3,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "contributions": {
+        "identify_relevant": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "predictive_modeling": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "controls_equipment": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "earth_applications": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "pillars": {
+        "prevention": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "suppression": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "profile": {
+        "hardware": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "flight_platform": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "dates": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "fuels": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "sample_shape_size": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "oxygen": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "pressure": null,
+        "airflow": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "fuel_type": {
+          "value": "solid",
+          "sources": [
+            1
+          ]
+        },
+        "variables": [
+          {
+            "text": "Stated in the passages.",
+            "sources": [
+              1
+            ]
+          }
+        ],
+        "constants": [],
+        "sensors": [
+          {
+            "text": "Stated in the passages.",
+            "sources": [
+              1
+            ]
+          }
+        ],
+        "measurements": []
+      },
+      "data_for_modeling": {
+        "text": "Flame spread rates.",
+        "readiness": "needs_extraction",
+        "sources": [
+          1
+        ]
+      },
+      "key_findings": [
+        {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "limitations": [
+        {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "label": "\"Spacecraft Fire Test\". SAFFIRE-T (PSI-1).",
+          "doc_title": "Spacecraft Fire Test",
+          "doc_authors": null,
+          "year": null,
+          "doc_type": "metadata",
+          "page": null,
+          "page_end": null,
+          "accession": "PSI-1",
+          "acronym": "SAFFIRE-T",
+          "related_accessions": [],
+          "file_name": null,
+          "psi_folder": null,
+          "investigation_url": "https://psi.example/investigations/PSI-1",
+          "public_url": null
+        }
+      ],
+      "review_flags": [
+        {
+          "code": "tier_mismatch",
+          "message": "Corpus fire_relevance 3 but ranked 1 of 2 (top third)"
+        }
+      ],
+      "model": "claude-opus-5-5"
+    },
+    {
+      "rank": 2,
+      "accession": "PSI-2",
+      "acronym": null,
+      "title": "Droplet Burning Test",
+      "investigation_url": "https://psi.example/investigations/PSI-2",
+      "fire_relevance": 2,
+      "total": 33.3,
+      "evidence_coverage": {
+        "own": [
+          {
+            "doc_type": "testsheet",
+            "documents": 1,
+            "chunks": 1,
+            "paginated_documents": 0
+          }
+        ],
+        "linked": [
+          {
+            "doc_type": "factsheet",
+            "documents": 1,
+            "chunks": 2,
+            "paginated_documents": 1
+          }
+        ],
+        "has_pages": false,
+        "card_only": false,
+        "passages": {
+          "card": 0,
+          "record": 1,
+          "linked": 2,
+          "book": 0,
+          "own": 1
+        },
+        "retrieval": "bm25"
+      },
+      "summary": {
+        "plain": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "technical": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "scores": {
+        "fire_safety_directness": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "habitat_relevance": {
+          "score": 1,
+          "computed": true,
+          "reason": "Mean of the four habitat scores (1, 1, 1, 1)"
+        },
+        "predictive_modeling_data": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "controls_and_equipment": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "earth_applications": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "habitats": {
+        "spacecraft": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "station": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "moon_base": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        },
+        "rover": {
+          "score": 1,
+          "reason": "From the objectives.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "contributions": {
+        "identify_relevant": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "predictive_modeling": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "controls_equipment": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "earth_applications": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "pillars": {
+        "prevention": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "suppression": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      },
+      "profile": {
+        "hardware": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "flight_platform": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "dates": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "fuels": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "sample_shape_size": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "oxygen": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "pressure": null,
+        "airflow": {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        },
+        "fuel_type": {
+          "value": "solid",
+          "sources": [
+            1
+          ]
+        },
+        "variables": [
+          {
+            "text": "Stated in the passages.",
+            "sources": [
+              1
+            ]
+          }
+        ],
+        "constants": [],
+        "sensors": [
+          {
+            "text": "Stated in the passages.",
+            "sources": [
+              1
+            ]
+          }
+        ],
+        "measurements": []
+      },
+      "data_for_modeling": {
+        "text": "Flame spread rates.",
+        "readiness": "needs_extraction",
+        "sources": [
+          1
+        ]
+      },
+      "key_findings": [
+        {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "limitations": [
+        {
+          "text": "Stated in the passages.",
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "label": "\"Droplet Burning Test — PSI record\". PSI-2.",
+          "doc_title": "Droplet Burning Test — PSI record",
+          "doc_authors": null,
+          "year": null,
+          "doc_type": "psi_record",
+          "page": null,
+          "page_end": null,
+          "accession": "PSI-2",
+          "acronym": null,
+          "related_accessions": [],
+          "file_name": null,
+          "psi_folder": null,
+          "investigation_url": "https://psi.example/investigations/PSI-2",
+          "public_url": null
+        }
+      ],
+      "review_flags": [],
+      "model": "claude-opus-5-5"
+    }
+  ],
+  "habitat_top": {
+    "spacecraft": [
+      {
+        "accession": "PSI-1",
+        "acronym": "SAFFIRE-T",
+        "score": 3,
+        "total": 100
+      },
+      {
+        "accession": "PSI-2",
+        "acronym": null,
+        "score": 1,
+        "total": 33.3
+      }
+    ],
+    "station": [
+      {
+        "accession": "PSI-1",
+        "acronym": "SAFFIRE-T",
+        "score": 3,
+        "total": 100
+      },
+      {
+        "accession": "PSI-2",
+        "acronym": null,
+        "score": 1,
+        "total": 33.3
+      }
+    ],
+    "moon_base": [
+      {
+        "accession": "PSI-1",
+        "acronym": "SAFFIRE-T",
+        "score": 3,
+        "total": 100
+      },
+      {
+        "accession": "PSI-2",
+        "acronym": null,
+        "score": 1,
+        "total": 33.3
+      }
+    ],
+    "rover": [
+      {
+        "accession": "PSI-1",
+        "acronym": "SAFFIRE-T",
+        "score": 3,
+        "total": 100
+      },
+      {
+        "accession": "PSI-2",
+        "acronym": null,
+        "score": 1,
+        "total": 33.3
+      }
+    ]
+  },
+  "coverage": {
+    "prevention": {
+      "spacecraft": [
+        "PSI-1"
+      ],
+      "station": [
+        "PSI-1"
+      ],
+      "moon_base": [
+        "PSI-1"
+      ],
+      "rover": [
+        "PSI-1"
+      ]
+    },
+    "detection": {
+      "spacecraft": [],
+      "station": [],
+      "moon_base": [],
+      "rover": []
+    },
+    "suppression": {
+      "spacecraft": [
+        "PSI-1"
+      ],
+      "station": [
+        "PSI-1"
+      ],
+      "moon_base": [
+        "PSI-1"
+      ],
+      "rover": [
+        "PSI-1"
+      ]
+    }
+  },
+  "synthesis": {
+    "overview": {
+      "text": "Two fixture investigations.",
+      "accessions": [
+        "PSI-1",
+        "PSI-2"
+      ]
+    },
+    "groups": [
+      {
+        "name": "Others",
+        "hardware": "Fixture rigs",
+        "accessions": [
+          "PSI-1",
+          "PSI-2"
+        ],
+        "similarities": [
+          {
+            "text": "Both burn in microgravity.",
+            "accessions": [
+              "PSI-1",
+              "PSI-2"
+            ]
+          }
+        ],
+        "differences": []
+      }
+    ],
+    "gaps": [
+      {
+        "text": "No partial-gravity data.",
+        "accessions": [
+          "PSI-1",
+          "PSI-2"
+        ]
+      }
+    ],
+    "review_flags": [
+      {
+        "code": "unknown_accession",
+        "message": "groups[0] (Others): dropped PSI-999, not a ranked investigation"
+      },
+      {
+        "code": "unknown_accession",
+        "message": "groups[0] (Others).differences[0]: dropped PSI-999, not a ranked investigation"
+      },
+      {
+        "code": "dropped_statement",
+        "message": "groups[0] (Others).differences[0] was dropped: it names no ranked investigation"
+      }
+    ],
+    "model": "claude-opus-5-5"
+  },
+  "failed": []
+}
