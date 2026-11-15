@@ -42,6 +42,11 @@ const CorpusInfoSchema = z.object({
     fusion: z.literal('rrf'),
     rrf_k: z.number().int().positive(),
     fts_tokenizer: z.string(),
+    // Added with the stage-1 corpus. Corpora built before have neither key: no limit, no stopwords.
+    /** At most this many chunks of one document in the k results; null = no limit. */
+    max_chunks_per_doc: z.number().int().positive().nullable().default(null),
+    /** Lowercased terms BM25 leaves out of the query. */
+    bm25_stopwords: z.array(z.string()).default([]),
   }),
   counts: z.object({
     investigations: z.number().int(),

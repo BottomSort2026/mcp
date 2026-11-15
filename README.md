@@ -3,7 +3,8 @@
 The chatbot backend of Flame in Freefall (NASA Space Apps 2026). It answers questions about NASA
 microgravity combustion research and spacecraft fire safety, for researchers and students, from a
 read-only corpus of NASA PSI investigations and NASA resources. Every claim in an answer carries a
-`[n]` marker, and the server attaches the matching citations.
+`[n]` marker, and the server attaches the matching citations. It also backs the Flame Lab: it runs
+the engine's FLEX prediction and explains it with the real ISS tests closest to the request.
 
 ```
 frontend → gateway → POST /chat ─┐
@@ -13,6 +14,10 @@ MCP clients ──────→ POST /mcp ───┤
       ├─ not sensible ──► "no entiendo lo que estas diciendo."         (intent: reject)
       ├─ investigate: BM25 + engine /embed → vec0 KNN → RRF → answer LLM call → citations
       └─ simulate:    engine /predict → answer LLM call   (only with PREDICT_ENABLED=true)
+
+frontend → gateway → POST /lab/predict { inputs, language }
+      engine /predict (both FLEX models + their k-NN) → TestSheets of the closest tests (corpus.db)
+      → explanation LLM call → { prediction (engine JSON, unchanged), explanation, cited_tests }
 ```
 
 The pipeline is fixed (route and translate, search, answer); it is not a tool-calling agent. The
@@ -25,6 +30,8 @@ corpus is built by the `train` repo; this service never writes to it.
 | `POST /chat` | The chat contract below. The gateway forwards it unchanged. |
 | `POST /mcp` | MCP over Streamable HTTP, stateless. Tool `ask_question({ prompt })`: the same pipeline, with a "Sources" list after the answer. |
 | `GET /health` | `{ ok, corpus: { built_at, embedding_model, dimension, counts } }`, from `corpus_info`. No network call. |
+| `POST /lab/predict` | The Flame Lab contract below: one press of Predict. |
+| `GET /lab/model-info` | The engine's `GET /model-info`, unchanged: the inputs, tested ranges and outputs the Lab builds its controls from. |
 
 The service binds `0.0.0.0:8001`, uses the incoming `X-Request-ID` as its request id (so its logs
 match the gateway's), and sends no CORS headers: the gateway owns them.
@@ -95,6 +102,69 @@ Errors are JSON, `{ "error": "<code>", "detail": "<text>" }`:
 
 No streaming: one JSON response per request.
 
+## Flame Lab contract
+
+One press of **Predict** is one request. The whole flow is described in the workspace's
+`temporal/prediction_flow.md`.
+
+```
+POST /lab/predict
+{ "inputs": { "fuel": "methanol", "pressure_atm": 1.0, "o2": 0.21, "suppressant": "none",
+              "suppressant_fraction": 0.0, "droplet_d0_mm": 3.0 },
+  "language": "es" }
+```
+
+- `inputs`: sent to `${ENGINE_URL}/predict` exactly as received, never coerced. The engine
+  validates them (names, values, `o2 + suppressant_fraction ≤ 1`); `GET /lab/model-info` describes
+  them. A value outside its tested range is not an error: the engine flags it.
+- `language`: the UI language as a BCP 47 tag (`es`, `en`, `pt-BR`). The explanation is written in it.
+- Unknown top-level fields are ignored.
+
+```json
+{
+  "prediction": { "outcome": { "prediction": …, "support": …, "model": … },
+                  "extinction": { "prediction": …, "support": …, "model": … } },
+  "explanation": "La llama se apagaría sola (58.7 %) … El test real más cercano, FLEX-046, …",
+  "cited_tests": [
+    { "testsheet_id": "FLEX-046", "cir_id": "205R001", "test_end": "disruption",
+      "label": "\"FLEX-046_TestSheet\". FLEX (PSI-69), folder Raw Data.",
+      "investigation_url": "https://psi.nasa.gov/physci/repo/data/investigations/PSI-69" }
+  ]
+}
+```
+
+- `prediction`: the engine's `POST /predict` response, unchanged. **Every number the Lab shows
+  comes from here**, never from the explanation.
+- `explanation`: plain text, at most about 180 words; `null` when the LLM failed or timed out.
+- `cited_tests`: the closest real tests the explanation names (all of them when it names none), with
+  a label in the team citation format and the PSI investigation page (never a file URL).
+
+How it is built (`src/lab.ts`):
+
+1. `${ENGINE_URL}/predict` with the inputs. The fields this service reads are checked with zod
+   (`src/engine.ts`); the body itself is forwarded unchanged.
+2. The closest real tests: the outcome model's, then the extinction model's when the predicted
+   label is `extinction` (otherwise that block is not shown). A test both found appears once.
+3. Their TestSheets from `corpus.db`: documents of type `testsheet` of the accession the models were
+   trained on (`training_source.accession`), by exact title. The engine's `FLEX-046` is the
+   document `FLEX-046_TestSheet`. No search involved.
+4. One LLM call (prose, not JSON mode). The model gets the rules (`LAB_SYSTEM`) and a data block:
+   the requested conditions, both models' numbers already formatted (`58.7 %`, `0.445`, `1.34 mm`,
+   `91.2 %`), each model's support, how many of the classifier's closest tests ended as predicted,
+   the closest tests with their conditions, and their TestSheet texts. Raw floats never reach it.
+
+Errors use the same JSON shape:
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `bad_request` | `inputs` missing or not an object, `language` missing or not a language tag, body not JSON |
+| 422 | `invalid_inputs` | The engine rejected the inputs; `detail` is the engine's message, to show next to the controls |
+| 502 | `predict_unavailable` | The engine is down, timed out, failed, or answered an unexpected body |
+| 502 | `model_info_unavailable` | `GET /lab/model-info` could not reach the engine's `/model-info` |
+
+A failed TestSheet lookup or LLM call does not fail the request: it is logged as a warning, and the
+response comes without TestSheet context or with `explanation: null`.
+
 ## How an answer is built
 
 1. **Router** (one LLM call, JSON mode): decides whether the message is sensible, rewrites it as
@@ -115,12 +185,16 @@ No streaming: one JSON response per request.
 A translation of `train/src/flame/corpus/search.py`, with every number from `corpus_info.search`:
 
 - **BM25** over `chunks_fts`: the query is cut into terms (letters and digits, keeping inner
-  `-+.`, so `SAFFIRE-III` stays whole), lowercased, deduplicated, each quoted and joined with `OR`.
-  It finds exact technical terms that vectors miss.
+  `-+.`, so `SAFFIRE-III` stays whole), lowercased, deduplicated, stripped of `bm25_stopwords`
+  ("what", "why", "between"...), each quoted and joined with `OR`. It finds exact technical terms
+  that vectors miss.
 - **Vectors**: KNN over `chunks_vec`; `similarity = 1 - distance² / 2` (L2-normalized vectors).
 - Each method fetches `max(candidates_per_method, k)` chunks. Reciprocal rank fusion scores a chunk
-  `Σ 1 / (rrf_k + rank)` over the methods that found it; ties keep BM25's order. The top `k` are
-  loaded with their document metadata in one query.
+  `Σ 1 / (rrf_k + rank)` over the methods that found it; ties keep BM25's order. Going down that
+  ranking, a chunk is skipped once its document already has `max_chunks_per_doc` chunks in the
+  results (`null` = no limit), so one long document cannot take all `k`. The top `k` are loaded
+  with their document metadata in one query. Corpora built without `max_chunks_per_doc` or
+  `bm25_stopwords` get no limit and no stopwords.
 - If the engine fails (down, timeout, HTTP error, wrong model or dimension), one warning is logged
   and the search runs on BM25 alone (`retrieval: "bm25"`). Only the LLM fails a request.
 
@@ -147,6 +221,14 @@ The engine adds the query prefix. The text is cut to 2000 characters before send
 the wrong length or a `model_id` other than `corpus_info.embedding.model_id` counts as an engine
 failure.
 
+```
+POST ${ENGINE_URL}/predict      the six Lab inputs → { outcome, extinction }, each { prediction, support, model }
+GET  ${ENGINE_URL}/model-info   → the inputs (values, tested ranges, units) and outputs of both FLEX models
+```
+
+The engine's `/openapi.json` is the source of truth. `src/engine.ts` checks only the fields this
+service reads and forwards the bodies unchanged. A `422` from `/predict` becomes `invalid_inputs`.
+
 ## LLM contract
 
 OpenAI-compatible chat completions; the router call asks for `response_format: json_object`:
@@ -165,12 +247,12 @@ concrete values, or with prediction disabled, falls back to retrieval.
 |---|---|---|
 | `PORT` | `8001` | Listen port (on `0.0.0.0`) |
 | `CORPUS_PATH` | `storage/corpus.db` (image: `/app/storage/corpus.db`) | The index, opened read-only |
-| `ENGINE_URL` | required | Engine base URL, e.g. `http://engine:8000`; a trailing slash is fine |
+| `ENGINE_URL` | required | Engine base URL, e.g. `http://engine:8000`; a trailing slash is fine. `/embed`, `/predict` and `/model-info` hang off it |
 | `LLM_URL` | required | Chat completions URL, e.g. `http://ollama:11434/v1/chat/completions` |
 | `LLM_MODEL` | required | Model name sent to the LLM |
 | `LLM_API_KEY` | none | Sent as `Authorization: Bearer …` when set |
 | `LLM_TIMEOUT_MS` | `60000` | Timeout per LLM call. Engine calls use 20 s |
-| `PREDICT_ENABLED` | `false` | Calls `${ENGINE_URL}/predict` for the simulate intent. Keep off: the engine's `/predict` is a placeholder |
+| `PREDICT_ENABLED` | `false` | Calls `${ENGINE_URL}/predict` for the chat's simulate intent. Keep off: the router does not extract the six FLEX inputs yet, so the engine would answer 422. The Flame Lab (`/lab/*`) does not depend on it |
 
 ## Run locally
 
@@ -185,6 +267,8 @@ pnpm dev                 # or: pnpm build && pnpm start
 curl -s localhost:8001/health
 curl -s -X POST localhost:8001/chat -H 'content-type: application/json' \
   -d '{"message":"¿Cómo afecta el CO2 a la extinción de una gota de heptano?","history":[]}'
+curl -s -X POST localhost:8001/lab/predict -H 'content-type: application/json' \
+  -d '{"inputs":{"fuel":"methanol","pressure_atm":1.0,"o2":0.21,"suppressant":"none","suppressant_fraction":0.0,"droplet_d0_mm":3.0},"language":"es"}'
 ```
 
 `pnpm test` runs everything offline: fixtures with the real schema, mock engine and LLM servers,
@@ -230,12 +314,15 @@ src/citations.ts   citation objects, labels, [n] markers
 src/history.ts     history clean-up for /chat
 src/embeddings.ts  engine /embed call, model and dimension check
 src/provider.ts    chat completions helper
-src/predict.ts     engine /predict call (off by default)
+src/predict.ts     engine /predict call for the chat's simulate intent (off by default)
+src/lab.ts         Flame Lab: labPredict() (engine, closest tests, TestSheets, explanation), labModelInfo()
+src/engine.ts      engine /predict and /model-info client, zod check of the fields read
+src/testsheets.ts  TestSheets of the closest tests and the investigation page, from corpus.db
 src/mcp.ts         MCP server, ask_question tool
-src/errors.ts      upstream error codes
-src/http.ts        POST JSON with a timeout
+src/errors.ts      upstream error codes, invalid Lab inputs
+src/http.ts        POST and GET JSON with a timeout; HttpError keeps the status
 src/text.ts        code-point truncation
-test/              unit, search, citation, HTTP flow and real-corpus tests
+test/              unit, search, citation, HTTP flow, Flame Lab and real-corpus tests
 ```
 
 ## Known limits
@@ -245,7 +332,10 @@ test/              unit, search, citation, HTTP flow and real-corpus tests
 - The index is fixed at boot: replacing the file requires a restart.
 - The router's "sensible" judgment is a model guess, so borderline messages are sometimes rejected
   or accepted. The fixed Spanish rejection message is the only feedback.
-- Each `/chat` costs two LLM calls and one embedding call.
+- Each `/chat` costs two LLM calls and one embedding call. Each `/lab/predict` costs one engine
+  call and one LLM call.
+- The Lab explanation is written by the model from pre-formatted numbers; it can still misstate
+  one. The frontend shows the numbers from `prediction`, never from the explanation.
 - Whether a claim really comes from the passage it cites depends on the model; the server only
   checks that each marker points at a passage it was given.
 

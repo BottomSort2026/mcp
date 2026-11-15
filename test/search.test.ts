@@ -4,15 +4,17 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { openCorpus, type Corpus } from '../src/db.ts';
 import { embed } from '../src/embeddings.ts';
-import { bm25Search, ftsQuery, rrf, search, type Embed } from '../src/rag.ts';
+import { bm25Search, ftsQuery, limitPerDoc, rrf, search, type Embed } from '../src/rag.ts';
 import {
   axis,
   CHUNKS,
   DIM,
   embedHandler,
   MODEL_ID,
+  NO_BM25_MATCH,
   SEARCH_K,
   sendJson,
+  weighted,
   withEngine,
   withIndex,
   type IndexOptions,
@@ -209,4 +211,62 @@ test('search reads k from corpus_info, not from a constant', async () => {
     const { hits } = await search(corpus, 'flames in microgravity', async () => axis(0), noWarnings);
     assert.equal(hits.length, SEARCH_K);
   });
+});
+
+test('ftsQuery leaves out the stopwords, like search.py', () => {
+  const stopwords = new Set(['why', 'does', 'a', 'in', 'what', 'is', 'it']);
+  assert.equal(
+    ftsQuery('Why does a flame become spherical in microgravity?', stopwords),
+    '"flame" OR "become" OR "spherical" OR "microgravity"',
+  );
+  assert.equal(ftsQuery('what is it', stopwords), null, 'nothing left: no BM25 query');
+  assert.equal(ftsQuery('what is it'), '"what" OR "is" OR "it"', 'no stopwords given: every term');
+});
+
+test('search takes the BM25 stopwords from corpus_info.search', async () => {
+  // 'a' is in chunks 2 and 5; 'cabin' only in chunk 5.
+  await withCorpus(async (corpus) => {
+    assert.deepEqual(corpus.info.search.bm25_stopwords, [], 'a corpus without the key has no stopwords');
+    const { hits } = await search(corpus, 'a cabin', failingEmbed, () => {});
+    assert.deepEqual(hits.map((hit) => hit.id), [5, 2]);
+  });
+  await withCorpus(
+    async (corpus) => {
+      const { hits } = await search(corpus, 'a cabin', failingEmbed, () => {});
+      assert.deepEqual(hits.map((hit) => hit.id), [5]);
+      assert.deepEqual(bm25Search(corpus.db, 'a', 20, new Set(corpus.info.search.bm25_stopwords)), []);
+    },
+    { patchInfo: (info) => (info.search.bm25_stopwords = ['a']) },
+  );
+});
+
+test('limitPerDoc keeps each document\'s best chunks, like search.py limit_per_doc', () => {
+  const docOf = new Map([[1, 'thesis'], [2, 'thesis'], [3, 'thesis'], [4, 'card'], [5, 'thesis'], [6, 'sheet']]);
+  const ranking: Array<[number, number]> = [[1, 0.6], [2, 0.5], [3, 0.4], [4, 0.3], [5, 0.2], [6, 0.1]];
+  const ids = (entries: Array<[number, number]>) => entries.map(([id]) => id);
+  assert.deepEqual(ids(limitPerDoc(ranking, docOf, 2, 3)), [1, 2, 4]);
+  assert.deepEqual(ids(limitPerDoc(ranking, docOf, 1, 5)), [1, 4, 6], 'fewer than k when candidates run out');
+  assert.deepEqual(limitPerDoc(ranking, docOf, null, 3), ranking.slice(0, 3));
+  assert.deepEqual(limitPerDoc(ranking, docOf, 0, 3), ranking.slice(0, 3), '0 = no limit');
+});
+
+test('search keeps at most max_chunks_per_doc chunks of one document', async () => {
+  // The vectors rank the card's two chunks (1, 2) first, then the fact sheet (4), then the test sheet (3).
+  const vector = weighted({ 0: 4, 1: 3, 3: 2, 2: 1 });
+  await withCorpus(async (corpus) => {
+    assert.equal(corpus.info.search.max_chunks_per_doc, null, 'a corpus without the key has no limit');
+    const { hits } = await search(corpus, NO_BM25_MATCH, async () => vector, noWarnings);
+    assert.deepEqual(hits.map((hit) => hit.id), [1, 2, 4]);
+  });
+  await withCorpus(
+    async (corpus) => {
+      const { hits } = await search(corpus, NO_BM25_MATCH, async () => vector, noWarnings);
+      assert.deepEqual(hits.map((hit) => [hit.id, hit.docId]), [
+        [1, 'PSI-1:card'],
+        [4, 'ext:factsheet-fire'],
+        [3, 'PSI-2:test-a'],
+      ]);
+    },
+    { patchInfo: (info) => (info.search.max_chunks_per_doc = 1) },
+  );
 });

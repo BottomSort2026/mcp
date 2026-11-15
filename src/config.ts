@@ -38,7 +38,8 @@ export const config = {
   llmModel: required('LLM_MODEL', 'e.g. LLM_MODEL=llama3.1'),
   llmApiKey: env.LLM_API_KEY,
   llmTimeoutMs: int('LLM_TIMEOUT_MS', 60_000),
-  // Off by default: the engine's /predict is still a placeholder with a different
-  // body, so the simulate intent falls back to retrieval.
+  // Only the chat's simulate intent. Off by default: the router does not extract the six FLEX
+  // inputs yet, so the engine would reject its parameters (422). The Flame Lab does not depend on
+  // it: /lab/predict always calls ${ENGINE_URL}/predict.
   predictUrl: bool('PREDICT_ENABLED', false) ? joinUrl(engineUrl, 'predict') : undefined,
 };

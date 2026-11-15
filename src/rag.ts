@@ -43,10 +43,11 @@ export type VectorMatch = { id: number; distance: number };
 
 /**
  * Hybrid retrieval, translated from train/src/flame/corpus/search.py: BM25 over
- * chunks_fts and KNN over chunks_vec, fused with reciprocal rank fusion. Every
- * parameter comes from corpus_info.search. When the query cannot be embedded
- * (engine down, timeout, HTTP error, wrong model or dimension) it warns once and
- * answers with BM25 alone.
+ * chunks_fts (without corpus_info.search.bm25_stopwords) and KNN over chunks_vec,
+ * fused with reciprocal rank fusion, keeping at most max_chunks_per_doc chunks of
+ * one document. Every parameter comes from corpus_info.search. When the query
+ * cannot be embedded (engine down, timeout, HTTP error, wrong model or dimension)
+ * it warns once and answers with BM25 alone.
  */
 export async function search(
   corpus: Corpus,
@@ -55,10 +56,10 @@ export async function search(
   warn: Warn,
 ): Promise<SearchResult> {
   const { db, info } = corpus;
-  const { k, candidates_per_method, rrf_k } = info.search;
+  const { k, candidates_per_method, rrf_k, max_chunks_per_doc, bm25_stopwords } = info.search;
   const n = Math.max(candidates_per_method, k);
 
-  const bm25 = bm25Search(db, query, n);
+  const bm25 = bm25Search(db, query, n, new Set(bm25_stopwords));
 
   let queryVector: number[] | undefined;
   try {
@@ -68,7 +69,9 @@ export async function search(
   }
   const vector = queryVector ? vectorSearch(db, queryVector, n) : [];
 
-  const fused = rrf([bm25, vector.map((match) => match.id)], rrf_k).slice(0, k);
+  const ranked = rrf([bm25, vector.map((match) => match.id)], rrf_k);
+  const docOf = max_chunks_per_doc ? docIds(db, ranked.map(([id]) => id)) : new Map<number, string>();
+  const fused = limitPerDoc(ranked, docOf, max_chunks_per_doc, k);
   const rows = hydrate(db, fused.map(([id]) => id));
   const foundByBm25 = new Set(bm25);
   const distances = new Map(vector.map((match) => [match.id, match.distance]));
@@ -99,17 +102,26 @@ const TERM = /[A-Za-z0-9][A-Za-z0-9\-+.]*[A-Za-z0-9+]|[A-Za-z0-9]/g;
 
 /**
  * Natural-language query -> FTS5 query: each distinct lowercased term quoted,
- * joined with OR. Null when the text has no terms (an empty MATCH is an error).
+ * joined with OR, leaving out the stopwords (corpus_info.search.bm25_stopwords:
+ * with OR, a chunk sharing only "what" or "between" with the query would still be
+ * a candidate). Null when no term is left (an empty MATCH is an error).
  */
-export function ftsQuery(text: string): string | null {
-  const terms = [...new Set((text.match(TERM) ?? []).map((term) => term.toLowerCase()))];
+export function ftsQuery(text: string, stopwords: ReadonlySet<string> = new Set()): string | null {
+  const terms = [...new Set((text.match(TERM) ?? []).map((term) => term.toLowerCase()))].filter(
+    (term) => !stopwords.has(term),
+  );
   if (terms.length === 0) return null;
   return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(' OR ');
 }
 
 /** Chunk ids ranked by bm25 (lower is better), best first. */
-export function bm25Search(db: DatabaseSync, query: string, n: number): number[] {
-  const match = ftsQuery(query);
+export function bm25Search(
+  db: DatabaseSync,
+  query: string,
+  n: number,
+  stopwords: ReadonlySet<string> = new Set(),
+): number[] {
+  const match = ftsQuery(query, stopwords);
   if (match === null) return [];
   return db
     .prepare(
@@ -142,6 +154,41 @@ export function rrf(rankings: number[][], rrfK: number): Array<[id: number, scor
     });
   }
   return [...scores].sort((a, b) => b[1] - a[1]);
+}
+
+/**
+ * The first k entries of a fused ranking with at most maxPerDoc chunks of one
+ * document (search.py's limit_per_doc). A long document (a thesis, a final
+ * report) would otherwise take every result; a document's best chunk never moves
+ * down. Null or 0 means no limit. Returns fewer than k when candidates run out.
+ */
+export function limitPerDoc<T extends [id: number, score: number]>(
+  ranking: T[],
+  docOf: ReadonlyMap<number, string>,
+  maxPerDoc: number | null,
+  k: number,
+): T[] {
+  if (!maxPerDoc) return ranking.slice(0, k);
+  const perDoc = new Map<string | undefined, number>();
+  const out: T[] = [];
+  for (const entry of ranking) {
+    const doc = docOf.get(entry[0]);
+    const seen = perDoc.get(doc) ?? 0;
+    if (seen >= maxPerDoc) continue;
+    perDoc.set(doc, seen + 1);
+    out.push(entry);
+    if (out.length === k) break;
+  }
+  return out;
+}
+
+// doc_id of each candidate chunk, for limitPerDoc.
+function docIds(db: DatabaseSync, ids: number[]): Map<number, string> {
+  if (ids.length === 0) return new Map();
+  const rows = db
+    .prepare(`SELECT id, doc_id FROM chunks WHERE id IN (${ids.map(() => '?').join(', ')})`)
+    .all(...ids);
+  return new Map(rows.map((row) => [Number(row.id), String(row.doc_id)]));
 }
 
 /**

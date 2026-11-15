@@ -1,6 +1,6 @@
-export type UpstreamCode = 'llm_unavailable' | 'predict_unavailable';
+export type UpstreamCode = 'llm_unavailable' | 'predict_unavailable' | 'model_info_unavailable';
 
-/** A dependency that can fail a /chat request. Answered as 502 with this code. */
+/** A dependency that can fail a request. Answered as 502 with this code. */
 export class UpstreamError extends Error {
   readonly code: UpstreamCode;
 
@@ -8,6 +8,18 @@ export class UpstreamError extends Error {
     super(message, options);
     this.name = 'UpstreamError';
     this.code = code;
+  }
+}
+
+/**
+ * The engine rejected the Flame Lab inputs (its 422: an unknown fuel, a fraction without a
+ * suppressant, o2 + fraction > 1, a missing field...). Answered as 422 with the engine's message,
+ * so the frontend can show it next to the controls.
+ */
+export class InvalidInputsError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'InvalidInputsError';
   }
 }
 

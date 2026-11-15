@@ -2,6 +2,7 @@ import { buildApp } from './app.ts';
 import { config } from './config.ts';
 import { openCorpus } from './db.ts';
 import { embed } from './embeddings.ts';
+import { createEngine } from './engine.ts';
 import { createPredict } from './predict.ts';
 import { createChat } from './provider.ts';
 import type { Embed } from './rag.ts';
@@ -29,6 +30,9 @@ const app = buildApp({
     timeoutMs: config.llmTimeoutMs,
   }),
   predict: config.predictUrl ? createPredict(config.predictUrl) : undefined,
+  // The Flame Lab (/lab/predict, /lab/model-info) always uses the engine; PREDICT_ENABLED only
+  // governs the chat's simulate intent.
+  engine: createEngine(config.engineUrl),
 });
 
 for (const message of bootWarnings) app.log.warn(message);
