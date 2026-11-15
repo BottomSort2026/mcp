@@ -117,7 +117,8 @@ POST /lab/predict
 - `inputs`: sent to `${ENGINE_URL}/predict` exactly as received, never coerced. The engine
   validates them (names, values, `o2 + suppressant_fraction ≤ 1`); `GET /lab/model-info` describes
   them. A value outside its tested range is not an error: the engine flags it.
-- `language`: the UI language as a BCP 47 tag (`es`, `en`, `pt-BR`). The explanation is written in it.
+- `language`: a BCP 47 tag (`es`, `en`, `pt-BR`); the frontend sends the browser language. The explanation is
+  written in it.
 - Unknown top-level fields are ignored.
 
 ```json
