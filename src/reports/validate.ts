@@ -1,10 +1,17 @@
 import { toCitation } from '../citations.ts';
+import { passageBlock } from '../pipeline.ts';
+import { mentionsLunarConditions } from './conditions.ts';
 import type { Evidence } from './evidence.ts';
-import { HABITATS, MODEL_CRITERIA, OBJECTIVES, PILLARS } from './rubric.ts';
-import { PROFILE_LIST_FIELDS, PROFILE_TEXT_FIELDS, type InvestigationOutput } from './schema.ts';
+import { HABITATS, MAX_SCORE, MODEL_CRITERIA, OBJECTIVES, PILLARS, type Habitat } from './rubric.ts';
+import { LIMITS, PROFILE_LIST_FIELDS, PROFILE_TEXT_FIELDS, type InvestigationOutput } from './schema.ts';
 import type { Claim, InvestigationRecord, Profile, ReviewFlag, Scored } from './types.ts';
 
 type Sourced = { sources: number[] };
+
+/** Habitats whose 3 needs tests at elevated oxygen, reduced pressure or partial gravity. */
+export const LUNAR_HABITATS: readonly Habitat[] = ['moon_base', 'rover'];
+
+export const wordCount = (text: string): number => text.split(/\s+/).filter(Boolean).length;
 
 /**
  * Turns the model's answer into a record: drops every claim whose sources are empty or point to
@@ -92,6 +99,35 @@ export function validateInvestigation(
     review_flags: flags,
     model,
   };
+
+  // Word limits from the prompt: flagged, never enforced.
+  const words: Array<[keyof InvestigationRecord['summary'], number]> = [
+    ['plain', LIMITS.summary_plain_words],
+    ['technical', LIMITS.summary_technical_words],
+  ];
+  for (const [key, limit] of words) {
+    const text = record.summary[key]?.text;
+    const count = text ? wordCount(text) : 0;
+    if (count > limit) {
+      flags.push({
+        code: 'over_word_limit',
+        message: `summary.${key} has ${count} words; the prompt asks for at most ${limit}`,
+      });
+    }
+  }
+
+  // The prompt allows a 3 for these only with lunar-like test conditions; the score is kept.
+  for (const habitat of LUNAR_HABITATS) {
+    const score = record.habitats[habitat];
+    if (score?.score !== MAX_SCORE) continue;
+    const cited = score.sources.map((n) => evidence.passages[n - 1]);
+    if (!cited.some((p) => mentionsLunarConditions(passageBlock(p.hit, p.n)))) {
+      flags.push({
+        code: 'lunar_conditions_unsupported',
+        message: `habitats.${habitat} is ${MAX_SCORE}, but none of its ${cited.length} cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity`,
+      });
+    }
+  }
 
   if (evidence.coverage.card_only) {
     flags.push({

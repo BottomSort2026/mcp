@@ -6,10 +6,10 @@ export const DEFAULT_REPORT_MODEL = 'claude-opus-5-5';
  * The report generator's own configuration. It never reads src/config.ts, which requires the
  * server's variables.
  */
-export function loadReportConfig(env: Env = process.env) {
-  const apiKey = env.ANTHROPIC_API_KEY;
-  // Only named here, never echoed.
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is required for pnpm report');
+export function loadReportConfig(env: Env = process.env, options: { requireApiKey?: boolean } = {}) {
+  const apiKey = env.ANTHROPIC_API_KEY || undefined;
+  // Only named here, never echoed. --dry-run works without it (it then counts characters).
+  if (!apiKey && options.requireApiKey !== false) throw new Error('ANTHROPIC_API_KEY is required for pnpm report');
   return {
     apiKey,
     model: env.REPORT_MODEL || DEFAULT_REPORT_MODEL,

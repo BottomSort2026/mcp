@@ -257,30 +257,75 @@ in `/chat` or the image, and calls Claude directly rather than through `/chat`: 
 investigation it builds the evidence from the corpus (every card chunk, a "PSI record" passage
 from `metadata_json`, the linked fact sheets, up to 3 mini-book passages and up to 12 passages
 from the investigation's own other documents found by a search scoped to its accession), and
-Claude scores it against the rubric in `src/reports/rubric.ts` through structured outputs. The
+Claude scores it with the anchors in `reports/prompts/investigation.system.md` through structured
+outputs (the weights are in `src/reports/rubric.ts`). The
 code validates the citations, computes the totals and the ranking, and renders the Markdown from
 the JSON. A last call compares the investigations by hardware and lists the gaps.
 
 ```bash
+pnpm report investigations --dry-run --only PSI-25          # see what would be sent; no generation call
 ANTHROPIC_API_KEY=… pnpm report investigations --only PSI-25,PSI-69,PSI-117
 ANTHROPIC_API_KEY=… pnpm report investigations            # reuses the three above
 pnpm report investigations --force                          # ignores reports/.cache
 ```
 
+| Flag | Default | Purpose |
+|---|---|---|
+| `--only PSI-25,PSI-69` | all | Regenerate only these accessions; the rest come from the cache or are skipped |
+| `--force` | off | Ignore every cache entry |
+| `--out <dir>` | `reports` | Directory of `investigations.json`, `investigations.md`, `.cache/` and `.dry-run/` |
+| `--dry-run` | off | Build everything up to the API call and write it to `<out>/.dry-run/`; no generation call, no cache write |
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | required | Claude API key |
+| `ANTHROPIC_API_KEY` | required (optional with `--dry-run`) | Claude API key |
 | `REPORT_MODEL` | `claude-opus-5-5` | Model of every report call |
 | `CORPUS_PATH` | `storage/corpus.db` | The corpus |
 | `ENGINE_URL` | none | Query embeddings; without it (or with the engine down) searches use BM25 |
 
+### Prompt files
+
+The system prompts are Markdown files the team edits without touching code:
+
+| File | Used by |
+|---|---|
+| `reports/prompts/investigation.system.md` | the call per investigation |
+| `reports/prompts/synthesis.system.md` | the last call: overview, hardware groups, gaps |
+
+`{{CHALLENGE}}` in either file is replaced with `reports/inputs/challenge.md`; it is the only
+placeholder. A missing or empty file, or any other `{{...}}` placeholder, stops the run before any
+call. The field names the prompts use (`summary.plain`, `scores`, `habitats`, `contributions`,
+`pillars`, `profile`, `data_for_modeling.readiness`, `key_findings`, `limitations`; `overview`,
+`hardware_groups`, `gaps`) are the names of the schemas in `src/reports/schema.ts`: rename one and
+change the other. The list limits the prompts state (5 key findings, 3 limitations, 6 gaps) are
+enforced by the schemas; the word limits are not, but a longer summary or overview gets an
+`over_word_limit` review flag. A `moon_base` or `rover` score of 3 whose cited passages mention no
+elevated oxygen, reduced pressure or partial gravity gets a `lunar_conditions_unsupported` flag;
+the score is kept.
+
+### Dry run
+
+`--dry-run` writes `<out>/.dry-run/<accession>.md` per investigation (honouring `--only`) with the
+rendered system prompt, the user message, the evidence coverage and whether a real run with the
+same flags would call the API or reuse the cache, plus `_synthesis.md` with the rendered synthesis
+system prompt (its user message is built from the generated records, so only a real run has it).
+With `ANTHROPIC_API_KEY` set it counts each request's input tokens with the token counting
+endpoint (`messages.countTokens`, same system prompt, message, thinking and output schema as the
+real call; not billed as generation) and prints them per investigation and in total; without the
+key it prints character counts. The total repeats the shared system prompt for every
+investigation; a real run reads it from the prompt cache after the first call.
+
+### Cache
+
 Each investigation's validated result is cached in `reports/.cache/<accession>.json`, keyed by
 model, prompt version, rubric version, `corpus_info.built_at` and the hash of
-`reports/inputs/challenge.md`. `--only` regenerates those accessions and takes the rest from the
-cache (investigations with no valid entry are skipped); `--force` ignores the cache. Change the
-weights in `src/reports/rubric.ts` and bump `RUBRIC_VERSION`; change a prompt, schema or call
-setting and bump `PROMPT_VERSION` in `src/reports/prompts.ts`. The run ends with the token usage
-of its calls, per step.
+`reports/inputs/challenge.md`. The prompt version is a short hash of both rendered system prompts,
+the rubric version, the output schemas and the call settings (effort, `max_tokens`), so editing a
+prompt file or a schema invalidates the cache by itself; it is recorded in the JSON's `run` block.
+`--only` regenerates those accessions and takes the rest from the cache (investigations with no
+valid entry are skipped); `--force` ignores the cache. Change the weights in
+`src/reports/rubric.ts` and bump `RUBRIC_VERSION`. The run ends with the token usage of its calls,
+per step.
 
 ## Layout
 
@@ -306,6 +351,7 @@ src/report.ts      CLI entry of pnpm report
 src/reports/       offline report generator: evidence, rubric, schemas, prompts, validation,
                    ranking, synthesis, cache, Markdown rendering
 reports/inputs/    the official challenge text, an input of the reports
+reports/prompts/   the system prompts of the reports, edited by the team
 test/              unit, search, citation, HTTP flow and real-corpus tests
 ```
 

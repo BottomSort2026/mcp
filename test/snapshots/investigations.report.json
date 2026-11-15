@@ -2,7 +2,7 @@
   "run": {
     "generated_at": "2026-11-15T12:00:00.000Z",
     "model": "claude-opus-5-5",
-    "prompt_version": "2026-11-15.1",
+    "prompt_version": "e26bdde1669a",
     "rubric_version": "2026-11-15.1",
     "corpus_built_at": "2026-11-15T00:00:00+00:00",
     "challenge_sha256": "d169eb9eb6368b8b643e0fd25ec69359bebde7e432f14534b9b132b269b2e161",
@@ -349,6 +349,14 @@
         }
       ],
       "review_flags": [
+        {
+          "code": "lunar_conditions_unsupported",
+          "message": "habitats.moon_base is 3, but none of its 1 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity"
+        },
+        {
+          "code": "lunar_conditions_unsupported",
+          "message": "habitats.rover is 3, but none of its 1 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity"
+        },
         {
           "code": "tier_mismatch",
           "message": "Corpus fire_relevance 3 but ranked 1 of 2 (top third)"
@@ -728,9 +736,9 @@
         "PSI-2"
       ]
     },
-    "groups": [
+    "hardware_groups": [
       {
-        "name": "Others",
+        "name": "Other",
         "hardware": "Fixture rigs",
         "accessions": [
           "PSI-1",
@@ -760,15 +768,15 @@
     "review_flags": [
       {
         "code": "unknown_accession",
-        "message": "groups[0] (Others): dropped PSI-999, not a ranked investigation"
+        "message": "hardware_groups[0] (Other): dropped PSI-999, not a ranked investigation"
       },
       {
         "code": "unknown_accession",
-        "message": "groups[0] (Others).differences[0]: dropped PSI-999, not a ranked investigation"
+        "message": "hardware_groups[0] (Other).differences[0]: dropped PSI-999, not a ranked investigation"
       },
       {
         "code": "dropped_statement",
-        "message": "groups[0] (Others).differences[0] was dropped: it names no ranked investigation"
+        "message": "hardware_groups[0] (Other).differences[0] was dropped: it names no ranked investigation"
       }
     ],
     "model": "claude-opus-5-5"

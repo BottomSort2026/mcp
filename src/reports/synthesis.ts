@@ -1,5 +1,6 @@
 import { HABITATS, PILLARS } from './rubric.ts';
-import type { SynthesisOutput } from './schema.ts';
+import { LIMITS, type SynthesisOutput } from './schema.ts';
+import { wordCount } from './validate.ts';
 import type { RankedInvestigation, ReviewFlag, Statement, Synthesis } from './types.ts';
 
 const FIRST = 3;
@@ -69,8 +70,8 @@ export function validateSynthesis(output: SynthesisOutput, known: Set<string>, m
   const statements = (path: string, values: Statement[]) =>
     values.flatMap((value, index) => statement(`${path}[${index}]`, value) ?? []);
 
-  const groups = output.groups.flatMap((group, index) => {
-    const path = `groups[${index}] (${group.name})`;
+  const groups = output.hardware_groups.flatMap((group, index) => {
+    const path = `hardware_groups[${index}] (${group.name})`;
     const accessions = keep(path, group.accessions);
     if (!accessions.length) {
       flags.push({ code: 'dropped_statement', message: `${path} was dropped: it names no ranked investigation` });
@@ -87,9 +88,17 @@ export function validateSynthesis(output: SynthesisOutput, known: Set<string>, m
     ];
   });
 
+  const words = wordCount(output.overview.text);
+  if (words > LIMITS.overview_words) {
+    flags.push({
+      code: 'over_word_limit',
+      message: `overview has ${words} words; the prompt asks for at most ${LIMITS.overview_words}`,
+    });
+  }
+
   return {
     overview: statement('overview', output.overview),
-    groups,
+    hardware_groups: groups,
     gaps: statements('gaps', output.gaps),
     review_flags: flags,
     model,

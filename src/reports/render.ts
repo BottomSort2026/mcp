@@ -16,6 +16,9 @@ const FLAG_MEANINGS: Record<string, string> = {
   served_by_fallback: 'Another model answered after a server-side fallback.',
   unknown_accession: 'The synthesis named an accession that is not a ranked investigation; it was removed.',
   dropped_statement: 'A synthesis statement named no ranked investigation and was removed.',
+  over_word_limit: 'A summary or the overview is longer than the word limit in the prompt; it is kept as written.',
+  lunar_conditions_unsupported:
+    'A moon_base or rover score of 3 cites no passage mentioning elevated oxygen, reduced pressure or partial gravity; the score is kept for review.',
 };
 
 const label = (key: string): string => {
@@ -140,7 +143,7 @@ export function renderInvestigations(report: InvestigationsReport): string {
     push('_The synthesis is not available for this run._', '');
   } else {
     if (synthesis.overview) push(statement(synthesis.overview), '');
-    for (const group of synthesis.groups) {
+    for (const group of synthesis.hardware_groups) {
       push(`### ${group.name}`, '', `Hardware: ${group.hardware}. Investigations: ${group.accessions.join(', ')}.`, '');
       if (group.similarities.length) push('Similarities:', '', ...group.similarities.map((s) => `- ${statement(s)}`), '');
       if (group.differences.length) push('Differences:', '', ...group.differences.map((s) => `- ${statement(s)}`), '');

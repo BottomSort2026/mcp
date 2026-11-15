@@ -23,6 +23,9 @@ export type StructuredReply = {
 /** One structured call. Production uses Claude through the SDK; tests pass a fake. */
 export type StructuredClient = (request: StructuredRequest) => Promise<StructuredReply>;
 
+/** The input tokens a structured call would send, from the token counting endpoint. */
+export type TokenCounter = (request: StructuredRequest) => Promise<number>;
+
 // Thinking is always on with Claude Opus 5.5; effort sets its depth (the model's default is medium).
 export const EFFORT = 'high' as const;
 export const MAX_TOKENS = 32_000;
@@ -47,6 +50,17 @@ export function addUsage(into: Usage, more: Usage): Usage {
   return into;
 }
 
+/** What a report call and its token count share, so --dry-run counts exactly what a run sends. */
+function callParams(model: string, request: StructuredRequest) {
+  return {
+    model,
+    system: [{ type: 'text' as const, text: request.system, cache_control: { type: 'ephemeral' as const } }],
+    messages: [{ role: 'user' as const, content: request.user }],
+    thinking: { type: 'adaptive' as const },
+    output_config: { effort: EFFORT, format: { type: 'json_schema' as const, schema: request.schema } },
+  };
+}
+
 /**
  * Claude through the native Messages API with structured outputs. Streams, because a long
  * structured answer plus thinking can outlast a non-streaming request. The system prompt is the
@@ -62,12 +76,8 @@ export function anthropicStructuredClient(options: {
 
   return async (request) => {
     const stream = client.beta.messages.stream({
-      model: options.model,
+      ...callParams(options.model, request),
       max_tokens: request.maxTokens,
-      system: [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: request.user }],
-      thinking: { type: 'adaptive' },
-      output_config: { effort: EFFORT, format: { type: 'json_schema', schema: request.schema } },
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
     });
@@ -85,6 +95,21 @@ export function anthropicStructuredClient(options: {
         cache_read_input_tokens: message.usage.cache_read_input_tokens ?? 0,
       },
     };
+  };
+}
+
+/**
+ * POST /v1/messages/count_tokens with the same system, message, thinking and output format as the
+ * real call. Counting is free of generation charges (it has its own rate limit) and writes no cache.
+ */
+export function anthropicTokenCounter(options: { apiKey: string; model: string; client?: Anthropic }): TokenCounter {
+  const client = options.client ?? new Anthropic({ apiKey: options.apiKey, maxRetries: 2 });
+  return async (request) => {
+    try {
+      return (await client.messages.countTokens(callParams(options.model, request))).input_tokens;
+    } catch (error) {
+      throw new Error(`token count failed: ${describeSdkError(error)}`, { cause: error });
+    }
   };
 }
 

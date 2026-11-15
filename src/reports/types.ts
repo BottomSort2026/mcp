@@ -60,7 +60,7 @@ export type Statement = { text: string; accessions: string[] };
 
 export type Synthesis = {
   overview: Statement | null;
-  groups: Array<{
+  hardware_groups: Array<{
     name: string;
     hardware: string;
     accessions: string[];

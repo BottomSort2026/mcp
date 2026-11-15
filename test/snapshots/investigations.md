@@ -8,7 +8,7 @@ _Rendered by code from `investigations.json` (`pnpm report investigations`). Do 
 |---|---|
 | Generated | 2026-11-15T12:00:00.000Z |
 | Model | claude-opus-5-5 |
-| Prompt version | 2026-11-15.1 |
+| Prompt version | e26bdde1669a |
 | Rubric version | 2026-11-15.1 |
 | Corpus built at | 2026-11-15T00:00:00+00:00 |
 | Challenge text | sha256 d169eb9eb636 |
@@ -36,21 +36,24 @@ _Rendered by code from `investigations.json` (`pnpm report investigations`). Do 
 ## Review flags
 
 - `dropped_statement`: A synthesis statement named no ranked investigation and was removed.
+- `lunar_conditions_unsupported`: A moon_base or rover score of 3 cites no passage mentioning elevated oxygen, reduced pressure or partial gravity; the score is kept for review.
 - `tier_mismatch`: The rank disagrees with the corpus fire_relevance tier (1 in the bottom third, or 3 in the top third).
 - `unknown_accession`: The synthesis named an accession that is not a ranked investigation; it was removed.
 
 | Where | Flag | Detail |
 |---|---|---|
+| SAFFIRE-T (PSI-1) | lunar_conditions_unsupported | habitats.moon_base is 3, but none of its 1 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity |
+| SAFFIRE-T (PSI-1) | lunar_conditions_unsupported | habitats.rover is 3, but none of its 1 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity |
 | SAFFIRE-T (PSI-1) | tier_mismatch | Corpus fire_relevance 3 but ranked 1 of 2 (top third) |
-| Synthesis | unknown_accession | groups[0] (Others): dropped PSI-999, not a ranked investigation |
-| Synthesis | unknown_accession | groups[0] (Others).differences[0]: dropped PSI-999, not a ranked investigation |
-| Synthesis | dropped_statement | groups[0] (Others).differences[0] was dropped: it names no ranked investigation |
+| Synthesis | unknown_accession | hardware_groups[0] (Other): dropped PSI-999, not a ranked investigation |
+| Synthesis | unknown_accession | hardware_groups[0] (Other).differences[0]: dropped PSI-999, not a ranked investigation |
+| Synthesis | dropped_statement | hardware_groups[0] (Other).differences[0] was dropped: it names no ranked investigation |
 
 ## Ranking
 
 | Rank | Investigation | Tier | Total | fire_safety_directness | habitat_relevance | predictive_modeling_data | controls_and_equipment | earth_applications | Flags |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | [SAFFIRE-T (PSI-1)](#rank-1-psi-1) | 3 | 100.0 | 3 | 3 | 3 | 3 | 3 | tier_mismatch |
+| 1 | [SAFFIRE-T (PSI-1)](#rank-1-psi-1) | 3 | 100.0 | 3 | 3 | 3 | 3 | 3 | lunar_conditions_unsupported, tier_mismatch |
 | 2 | [PSI-2](#rank-2-psi-2) | 2 | 33.3 | 1 | 1 | 1 | 1 | 1 |  |
 
 ### Top per habitat
@@ -140,6 +143,8 @@ Evidence: own metadata 1 doc / 2 chunks; linked factsheet 1 doc / 2 chunks; page
 
 **Review flags**
 
+- `lunar_conditions_unsupported`: habitats.moon_base is 3, but none of its 1 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity
+- `lunar_conditions_unsupported`: habitats.rover is 3, but none of its 1 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity
 - `tier_mismatch`: Corpus fire_relevance 3 but ranked 1 of 2 (top third)
 
 **Sources**
@@ -220,7 +225,7 @@ Evidence: own testsheet 1 doc / 1 chunks; linked factsheet 1 doc / 2 chunks; pag
 
 Two fixture investigations. (PSI-1, PSI-2)
 
-### Others
+### Other
 
 Hardware: Fixture rigs. Investigations: PSI-1, PSI-2.
 

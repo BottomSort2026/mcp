@@ -13,6 +13,11 @@ import { HABITATS, MAX_SCORE, MODEL_CRITERIA, OBJECTIVES, PILLARS } from './rubr
  * back as { stated: false, text: "", sources: [] } and the code turns it into null. Scores are an
  * integer enum, which the grammar enforces. The SDK's zodOutputFormat helper (1.3.0) moves `enum`
  * into the description, so strictJsonSchema below is used instead, and zod validates every reply.
+ *
+ * The field names follow reports/prompts/*.system.md. The list limits the prompts state are .max()
+ * here: structured outputs do not accept maxItems (strictJsonSchema strips it), so the descriptions
+ * repeat them and zod rejects a longer list (the call is retried once). Word limits are not
+ * enforced; validation flags a text that exceeds one.
  */
 
 const Sources = z
@@ -44,6 +49,16 @@ const keyed = <K extends string, S extends z.ZodType>(keys: readonly K[], schema
 
 const ClaimList = z.array(ClaimSchema);
 
+/** Limits stated in the prompt files. */
+export const LIMITS = {
+  summary_plain_words: 60,
+  summary_technical_words: 120,
+  overview_words: 120,
+  key_findings: 5,
+  limitations: 3,
+  gaps: 6,
+} as const;
+
 export const PROFILE_TEXT_FIELDS = [
   'hardware',
   'flight_platform',
@@ -59,8 +74,12 @@ export const PROFILE_LIST_FIELDS = ['variables', 'constants', 'sensors', 'measur
 /** What the model returns for one investigation. */
 export const InvestigationOutputSchema = z.object({
   summary: z.object({
-    plain: ClaimSchema.describe('For students: what it studied and why it matters, in plain words.'),
-    technical: ClaimSchema.describe('For researchers: objectives, configuration, conditions, results.'),
+    plain: ClaimSchema.describe(
+      `At most ${LIMITS.summary_plain_words} words, for an undergraduate or a curious member of the public.`,
+    ),
+    technical: ClaimSchema.describe(
+      `At most ${LIMITS.summary_technical_words} words, for a researcher: what was burned, how, under which conditions, measured with what.`,
+    ),
   }),
   scores: keyed(
     MODEL_CRITERIA.map((c) => c.key),
@@ -88,8 +107,10 @@ export const InvestigationOutputSchema = z.object({
     readiness: z.enum(READINESS),
     sources: Sources,
   }),
-  key_findings: ClaimList,
-  limitations: ClaimList,
+  key_findings: ClaimList.max(LIMITS.key_findings).describe(
+    `Up to ${LIMITS.key_findings} results the passages report; [] when they state none.`,
+  ),
+  limitations: ClaimList.max(LIMITS.limitations).describe(`Up to ${LIMITS.limitations} limitations.`),
 });
 export type InvestigationOutput = z.infer<typeof InvestigationOutputSchema>;
 
@@ -100,8 +121,8 @@ const Statement = z.object({
 
 /** What the model returns for the cross-investigation synthesis. */
 export const SynthesisOutputSchema = z.object({
-  overview: Statement,
-  groups: z.array(
+  overview: Statement.describe(`One paragraph of at most ${LIMITS.overview_words} words.`),
+  hardware_groups: z.array(
     z.object({
       name: z.string(),
       hardware: z.string(),
@@ -110,7 +131,7 @@ export const SynthesisOutputSchema = z.object({
       differences: z.array(Statement),
     }),
   ),
-  gaps: z.array(Statement),
+  gaps: z.array(Statement).max(LIMITS.gaps).describe(`Up to ${LIMITS.gaps} gaps.`),
 });
 export type SynthesisOutput = z.infer<typeof SynthesisOutputSchema>;
 

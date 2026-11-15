@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,17 +13,25 @@ import {
   callStructured,
   emptyUsage,
   type StructuredClient,
+  type TokenCounter,
   type StructuredReply,
   type StructuredRequest,
 } from '../src/reports/claude.ts';
 import { buildEvidence, cardDocId, listInvestigations } from '../src/reports/evidence.ts';
-import { generateInvestigationsReport } from '../src/reports/investigations.ts';
-import { SYNTHESIS_SYSTEM } from '../src/reports/prompts.ts';
+import {
+  mentionsElevatedOxygen,
+  mentionsLunarConditions,
+  mentionsPartialGravity,
+  mentionsReducedPressure,
+} from '../src/reports/conditions.ts';
+import { dryRunInvestigations, generateInvestigationsReport } from '../src/reports/investigations.ts';
+import { loadSystemPrompts, PROMPT_FILES, renderPrompt } from '../src/reports/prompts.ts';
 import { rankInvestigations, total } from '../src/reports/rank.ts';
 import { renderInvestigations } from '../src/reports/render.ts';
 import { HABITATS, MODEL_CRITERIA, OBJECTIVES, type Habitat } from '../src/reports/rubric.ts';
 import {
   InvestigationOutputSchema,
+  LIMITS,
   strictJsonSchema,
   SynthesisOutputSchema,
   type InvestigationOutput,
@@ -35,6 +43,7 @@ import { axis, withIndex, type IndexOptions } from './fixtures.ts';
 const CORPUS = fileURLToPath(new URL('../storage/corpus.db', import.meta.url));
 const SNAPSHOT_JSON = fileURLToPath(new URL('./snapshots/investigations.report.json', import.meta.url));
 const SNAPSHOT_MD = fileURLToPath(new URL('./snapshots/investigations.md', import.meta.url));
+const PROMPTS = fileURLToPath(new URL('../reports/prompts', import.meta.url));
 const MODEL = 'claude-opus-5-5';
 const FIXED_NOW = () => new Date('2026-11-15T12:00:00Z');
 
@@ -114,9 +123,9 @@ function fakeOutput(sources: number[] = [1], score: 0 | 1 | 2 | 3 = 2): Investig
 
 const SYNTHESIS = {
   overview: { text: 'Two fixture investigations.', accessions: ['PSI-1', 'PSI-2'] },
-  groups: [
+  hardware_groups: [
     {
-      name: 'Others',
+      name: 'Other',
       hardware: 'Fixture rigs',
       accessions: ['PSI-1', 'PSI-2', 'PSI-999'],
       similarities: [{ text: 'Both burn in microgravity.', accessions: ['PSI-1', 'PSI-2'] }],
@@ -147,7 +156,7 @@ const reply = (text: string, stopReason = 'end_turn'): StructuredReply => ({
 function fakeClaude(answer?: (accession: string, attempt: number) => StructuredReply | undefined) {
   const calls: Array<{ accession: string | null; request: StructuredRequest }> = [];
   const client: StructuredClient = async (request) => {
-    if (request.system === SYNTHESIS_SYSTEM) {
+    if (request.user.startsWith('Records:')) {
       calls.push({ accession: null, request });
       return reply(JSON.stringify(SYNTHESIS));
     }
@@ -422,7 +431,7 @@ test('generator: failed investigations are recorded and the run continues', asyn
       });
       const { report } = await generateInvestigationsReport(
         { corpus, embed: engineDown, warn: quiet, client: fake.client, model: MODEL, now: FIXED_NOW },
-        { outDir: dir, challengePath: join(dir, 'challenge.md') },
+        { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir: PROMPTS },
       );
       assert.deepEqual(report.investigations.map((r) => r.accession), ['PSI-1']);
       assert.deepEqual(report.failed, [
@@ -451,7 +460,7 @@ test('cache: a second run makes no calls; --force and --only regenerate', async 
             model: options.model ?? MODEL,
             now: FIXED_NOW,
           },
-          { outDir: options.outDir ?? dir, challengePath, only: options.only, force: options.force },
+          { outDir: options.outDir ?? dir, challengePath, promptsDir: PROMPTS, only: options.only, force: options.force },
         );
       const called = () => fake.calls.splice(0).map((c) => c.accession);
 
@@ -507,11 +516,15 @@ test('generator: ranking, synthesis validation and the system prompt', async () 
       const fake = fakeClaude();
       const { report } = await generateInvestigationsReport(
         { corpus, embed: engineDown, warn: quiet, client: fake.client, model: MODEL, now: FIXED_NOW },
-        { outDir: dir, challengePath: join(dir, 'challenge.md') },
+        { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir: PROMPTS },
       );
       const investigation = fake.calls.find((c) => c.accession === 'PSI-1')!.request;
-      assert.match(investigation.system, /Official challenge text for the test\./);
-      assert.match(investigation.system, /fire_safety_directness \(weight 3\)/);
+      assert.equal(investigation.system, loadSystemPrompts(PROMPTS, 'Official challenge text for the test.').investigation);
+      assert.match(investigation.system, /## The challenge\n\nOfficial challenge text for the test\.$/);
+      assert.match(investigation.system, /### fire_safety_directness/);
+      const synthesisCall = fake.calls.find((c) => c.accession === null)!.request;
+      assert.match(synthesisCall.system, /`hardware_groups`/);
+      assert.match(report.run.prompt_version, /^[0-9a-f]{12}$/);
       assert.match(investigation.user, /\[3\] Spacecraft Fire Test — PSI record \| type: psi_record/);
 
       assert.deepEqual(report.investigations.map((r) => [r.rank, r.accession, r.total]), [
@@ -523,8 +536,8 @@ test('generator: ranking, synthesis validation and the system prompt', async () 
       assert.deepEqual(report.coverage.detection.station, []);
 
       const synthesis = report.synthesis!;
-      assert.deepEqual(synthesis.groups[0].accessions, ['PSI-1', 'PSI-2']);
-      assert.deepEqual(synthesis.groups[0].differences, []);
+      assert.deepEqual(synthesis.hardware_groups[0].accessions, ['PSI-1', 'PSI-2']);
+      assert.deepEqual(synthesis.hardware_groups[0].differences, []);
       assert.deepEqual(
         synthesis.review_flags.map((f) => f.code),
         ['unknown_accession', 'unknown_accession', 'dropped_statement'],
@@ -654,4 +667,195 @@ test('real corpus.db: the evidence for PSI-25', async () => {
   } finally {
     db.close();
   }
+});
+
+test('prompt files: {{CHALLENGE}} is replaced in both, and other placeholders fail', () => {
+  const challenge = 'Challenge with {{braces}} of its own.';
+  const prompts = loadSystemPrompts(PROMPTS, `\n${challenge}\n\n`);
+  for (const text of [prompts.investigation, prompts.synthesis]) {
+    assert.ok(text.endsWith(`## The challenge\n\n${challenge}`), 'the trimmed challenge closes the prompt');
+    assert.ok(!text.includes('{{CHALLENGE}}'));
+  }
+
+  assert.equal(renderPrompt('A {{ CHALLENGE }} B', { CHALLENGE: 'x' }, 'p.md'), 'A x B');
+  assert.throws(
+    () => renderPrompt('A {{CHALLENGE}} {{AUDIENCE}}', { CHALLENGE: 'x' }, 'reports/prompts/p.md'),
+    /reports\/prompts\/p\.md still contains the placeholder\(s\) \{\{AUDIENCE\}\}; the code fills only \{\{CHALLENGE\}\}/,
+  );
+});
+
+test('prompt files: a missing or empty file fails with its path', async () => {
+  await withTempDir(async (dir) => {
+    assert.throws(() => loadSystemPrompts(dir, 'c'), /cannot read the prompt file .*investigation\.system\.md: it is missing/);
+    cpSync(join(PROMPTS, PROMPT_FILES.investigation), join(dir, PROMPT_FILES.investigation));
+    assert.throws(() => loadSystemPrompts(dir, 'c'), /cannot read the prompt file .*synthesis\.system\.md/);
+    writeFileSync(join(dir, PROMPT_FILES.synthesis), '  \n');
+    assert.throws(() => loadSystemPrompts(dir, 'c'), /the prompt file .*synthesis\.system\.md is empty/);
+
+    // The generator fails before any call.
+    await withCorpus(async (corpus) => {
+      writeFileSync(join(dir, 'challenge.md'), 'Challenge text.');
+      const fake = fakeClaude();
+      await assert.rejects(
+        generateInvestigationsReport(
+          { corpus, embed: engineDown, warn: quiet, client: fake.client, model: MODEL },
+          { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir: join(dir, 'nowhere') },
+        ),
+        /cannot read the prompt file .*nowhere.*investigation\.system\.md/,
+      );
+      assert.equal(fake.calls.length, 0);
+    });
+  });
+});
+
+test('prompt version: editing a prompt file changes it and invalidates the cache', async () => {
+  await withCorpus((corpus) =>
+    withTempDir(async (dir) => {
+      const promptsDir = join(dir, 'prompts');
+      cpSync(PROMPTS, promptsDir, { recursive: true });
+      writeFileSync(join(dir, 'challenge.md'), 'Challenge text.');
+      const fake = fakeClaude();
+      const run = () =>
+        generateInvestigationsReport(
+          { corpus, embed: engineDown, warn: quiet, client: fake.client, model: MODEL, now: FIXED_NOW },
+          { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir },
+        );
+      const called = () => fake.calls.splice(0).map((c) => c.accession);
+
+      const first = await run();
+      assert.equal(called().length, 3);
+      const again = await run();
+      assert.deepEqual(called(), [], 'unchanged prompts: everything from the cache');
+      assert.equal(again.report.run.prompt_version, first.report.run.prompt_version);
+
+      const file = join(promptsDir, PROMPT_FILES.synthesis);
+      writeFileSync(file, readFileSync(file, 'utf8').replace('up to 6 gaps', 'up to 5 gaps'));
+      const edited = await run();
+      assert.notEqual(edited.report.run.prompt_version, first.report.run.prompt_version);
+      assert.deepEqual(called().sort(), ['PSI-1', 'PSI-2', null].sort(), 'every investigation is regenerated');
+      assert.deepEqual(edited.report.run.cached, []);
+    }),
+  );
+});
+
+test('--dry-run: one file per investigation, no generation call, no cache write', async () => {
+  await withCorpus((corpus) =>
+    withTempDir(async (dir) => {
+      writeFileSync(join(dir, 'challenge.md'), 'Challenge text for the dry run.');
+      const counted: StructuredRequest[] = [];
+      const countTokens: TokenCounter = async (request) => {
+        counted.push(request);
+        return 1000 + request.user.length;
+      };
+      const options = { outDir: dir, challengePath: join(dir, 'challenge.md'), promptsDir: PROMPTS };
+      // No client at all: the dry run has nothing to call Claude with.
+      const result = await dryRunInvestigations(
+        { corpus, embed: engineDown, warn: quiet, model: MODEL, countTokens },
+        options,
+      );
+
+      const dryDir = join(dir, '.dry-run');
+      assert.equal(result.dir, dryDir);
+      assert.deepEqual(readdirSync(dryDir).sort(), ['PSI-1.md', 'PSI-2.md', '_synthesis.md']);
+      assert.ok(!existsSync(join(dir, '.cache')), 'no cache write');
+      assert.ok(!existsSync(join(dir, 'investigations.json')));
+      assert.equal(counted.length, 2);
+
+      const [psi1] = result.entries;
+      assert.equal(psi1.accession, 'PSI-1');
+      assert.equal(psi1.input_tokens, 1000 + psi1.user_chars);
+      assert.equal(psi1.would_call, true);
+      const file = readFileSync(join(dryDir, 'PSI-1.md'), 'utf8');
+      assert.ok(file.includes(loadSystemPrompts(PROMPTS, 'Challenge text for the dry run.').investigation));
+      assert.ok(file.includes(counted.find((r) => r.user.includes('PSI-1'))!.user));
+      assert.match(file, /## Evidence coverage\n\n- Own documents: metadata: 1 document\(s\), 2 chunk\(s\)/);
+      assert.match(file, /- Passages given to the model: 5 \(card 2, record 1, linked 2, book 0, own 0\)/);
+      assert.match(file, new RegExp(`- Prompt version: ${result.prompt_version}`));
+
+      // --only, and no counter: characters only, one file.
+      rmSync(dryDir, { recursive: true });
+      const only = await dryRunInvestigations(
+        { corpus, embed: engineDown, warn: quiet, model: MODEL },
+        { ...options, only: ['PSI-2'] },
+      );
+      assert.deepEqual(readdirSync(dryDir).sort(), ['PSI-2.md', '_synthesis.md']);
+      assert.equal(only.entries[0].input_tokens, null);
+      assert.match(readFileSync(join(dryDir, 'PSI-2.md'), 'utf8'), /- Input: \d+ characters \(system \d+, user \d+\); not token-counted/);
+    }),
+  );
+});
+
+test('moon_base and rover: a 3 without lunar conditions in its cited passages is flagged, not changed', async () => {
+  await withCorpus(async (corpus) => {
+    const [psi1] = listInvestigations(corpus.db);
+    const evidence = await buildEvidence(psi1, { corpus, embed: engineDown, warn: quiet });
+    // The fixture passages speak of fabric, opposed airflow and spherical flames: no lunar condition.
+    const record = validateInvestigation(evidence, fakeOutput([1, 2], 3), MODEL, MODEL);
+    assert.equal(record.habitats.moon_base?.score, 3, 'the score is kept');
+    assert.deepEqual(
+      record.review_flags.filter((f) => f.code === 'lunar_conditions_unsupported').map((f) => f.message),
+      [
+        'habitats.moon_base is 3, but none of its 2 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity',
+        'habitats.rover is 3, but none of its 2 cited passage(s) mentions elevated oxygen, reduced pressure or partial gravity',
+      ],
+    );
+
+    // A cited passage reporting 34 % O2 at reduced pressure supports the 3; a 2 is never flagged.
+    const supported = structuredClone(evidence);
+    supported.passages[1].hit.text = 'Flame spread was measured at 34% O2 and 8.2 psi.';
+    const output = fakeOutput([1, 2], 3);
+    output.habitats.rover = { score: 2, reason: 'Needs extrapolation.', sources: [1] };
+    const ok = validateInvestigation(supported, output, MODEL, MODEL);
+    assert.deepEqual(ok.review_flags.filter((f) => f.code === 'lunar_conditions_unsupported'), []);
+  });
+});
+
+test('lunar condition heuristics', () => {
+  assert.ok(mentionsElevatedOxygen('tests at 30% oxygen'));
+  assert.ok(mentionsElevatedOxygen('oxygen concentrations from 21 to 40%'));
+  assert.ok(mentionsElevatedOxygen('an oxygen-enriched atmosphere'));
+  assert.ok(mentionsElevatedOxygen('oxygen mole fraction of 0.35'));
+  assert.ok(!mentionsElevatedOxygen('air at 21% O2'));
+  assert.ok(!mentionsElevatedOxygen('CO2 at 40% of the mixture'));
+
+  assert.ok(mentionsReducedPressure('at 10.2 psi'));
+  assert.ok(mentionsReducedPressure('pressures of 0.5 to 1 atm'));
+  assert.ok(mentionsReducedPressure('tests at reduced pressure'));
+  assert.ok(mentionsReducedPressure('50 kPa'));
+  assert.ok(!mentionsReducedPressure('at 14.7 psi and 1 atm'));
+  assert.ok(!mentionsReducedPressure('see 3 PSI-25 for details'));
+  assert.ok(!mentionsReducedPressure('the oxygen partial pressure'));
+
+  assert.ok(mentionsPartialGravity('flames in partial gravity'));
+  assert.ok(mentionsPartialGravity('at lunar gravity (0.16 g)'));
+  assert.ok(mentionsPartialGravity('E-FIELD Flames'));
+  assert.ok(!mentionsPartialGravity('combustion in reduced gravity and microgravity'));
+
+  assert.ok(!mentionsLunarConditions('flame spread against a slow opposed airflow'));
+});
+
+test('limits: list lengths are enforced by zod, word counts only flagged', async () => {
+  const output = fakeOutput();
+  output.key_findings = Array.from({ length: LIMITS.key_findings + 1 }, () => ({ text: 'f', sources: [1] }));
+  assert.ok(!InvestigationOutputSchema.safeParse(output).success, '6 key findings');
+  const limits = fakeOutput();
+  limits.limitations = Array.from({ length: LIMITS.limitations + 1 }, () => ({ text: 'l', sources: [1] }));
+  assert.ok(!InvestigationOutputSchema.safeParse(limits).success, '4 limitations');
+  const gaps = { ...SYNTHESIS, gaps: Array.from({ length: LIMITS.gaps + 1 }, () => SYNTHESIS.gaps[0]) };
+  assert.ok(!SynthesisOutputSchema.safeParse(gaps).success, '7 gaps');
+  assert.ok(SynthesisOutputSchema.safeParse(SYNTHESIS).success);
+
+  await withCorpus(async (corpus) => {
+    const [psi1] = listInvestigations(corpus.db);
+    const evidence = await buildEvidence(psi1, { corpus, embed: engineDown, warn: quiet });
+    const long = fakeOutput();
+    long.summary.plain = { text: Array.from({ length: 61 }, () => 'word').join(' '), sources: [1] };
+    long.summary.technical = { text: Array.from({ length: 120 }, () => 'word').join(' '), sources: [1] };
+    const record = validateInvestigation(evidence, long, MODEL, MODEL);
+    assert.equal(record.summary.plain?.text.split(' ').length, 61, 'kept as written');
+    assert.deepEqual(
+      record.review_flags.filter((f) => f.code === 'over_word_limit').map((f) => f.message),
+      ['summary.plain has 61 words; the prompt asks for at most 60'],
+    );
+  });
 });
